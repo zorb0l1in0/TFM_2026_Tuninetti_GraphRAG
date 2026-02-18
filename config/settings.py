@@ -25,7 +25,7 @@ if not OPENAI_API_KEY:
 # Neo4j Configuration
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 # Configuración del modelo
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
