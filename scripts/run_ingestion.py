@@ -7,11 +7,11 @@ Script de ingestión de datos - Construye el grafo desde CSV
 
 import sys
 from pathlib import Path
-
+import pandas as pd
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.ingestion.loader import CSVLoader
-from src.ingestion.graphbuilder import GraphBuilder
+from src.ingestion.graph_builder import GraphBuilder
 
 
 def main():
@@ -28,7 +28,7 @@ def main():
     print("-" * 30)
 
     try:
-        cargador = CSVLoader(NOMBRE_CSV)
+        cargador = CSVLoader(NOMBRE_CSV, cargar_embeddings=True)
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
         return
@@ -87,6 +87,37 @@ def main():
 
         print("\n🌐 Puedes explorar el grafo en:")
         print("   http://localhost:7474")
+        print("\n🌐 Puedes explorar el grafo en:")
+        print("   http://localhost:7474")
+
+        # 🔥 NUEVO: ASOCIAR EMBEDDINGS
+        print("\n" + "=" * 60)
+        print("🔗 PASO 3: ASOCIAR EMBEDDINGS A NODOS")
+        print("=" * 60)
+
+        # Verificar que la columna embedding existe
+        if 'embedding' in cargador.df.columns:
+            # Usar el loader original (ya tiene los embeddings)
+            nodos_actualizados = builder.asociar_embeddings(cargador)
+
+            if nodos_actualizados > 0:
+                print(f"\n✅ {nodos_actualizados} nodos actualizados con embeddings")
+
+                # Verificar embeddings en Neo4j
+                result = builder.consultar("""
+                    MATCH (e:__Entity__)
+                    WHERE e.embedding IS NOT NULL
+                    RETURN count(e) as total, size(e.embedding) as dim
+                    LIMIT 1
+                    """)
+                if result:
+                    print(f"📊 Nodos con embedding: {result[0]['total']}")
+                    if 'dim' in result[0]:
+                        print(f"📏 Dimensión embeddings: {result[0]['dim']}")
+        else:
+            print("⚠️ No se encontró columna 'embedding' en el CSV")
+
+
 
     except Exception as e:
         print(f"\n❌ Error construyendo grafo: {e}")
