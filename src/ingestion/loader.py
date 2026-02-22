@@ -1,21 +1,26 @@
 import pandas as pd
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from langchain_core.documents import Document
 from config import settings
+import json
+import ast
 
 
 class CSVLoader:
     """
-    Cargador simple que extrae texto y metadatos fundamentales del CSV.
+    Cargador simple que extrae texto, metadatos y embeddings del CSV.
     """
 
-    def __init__(self, nombre_archivo: str):
+    def __init__(self, nombre_archivo: str, cargar_embeddings: bool = True):
         """
         Args:
             nombre_archivo: Nombre del archivo CSV en data/processed/chunks/
+            cargar_embeddings: Si True, carga la columna embedding
         """
         self.ruta_csv = settings.CHUNKS_DIR / nombre_archivo
+        self.cargar_embeddings = cargar_embeddings
+
         if not self.ruta_csv.exists():
             raise FileNotFoundError(f"❌ CSV no encontrado: {self.ruta_csv}")
 
@@ -24,19 +29,24 @@ class CSVLoader:
         print(f"✅ Total filas: {len(self.df)}")
         print(f"📋 Columnas: {', '.join(self.df.columns[:5])}...")
 
+        # Verificar si hay embeddings
+        if cargar_embeddings and 'embedding' in self.df.columns:
+            print(f"🔢 Columna 'embedding' encontrada")
+            # Mostrar estadísticas de embeddings
+            con_embedding = self.df['embedding'].notna().sum()
+            print(f"   • Filas con embedding: {con_embedding}/{len(self.df)}")
+        elif cargar_embeddings:
+            print(f"⚠️ Columna 'embedding' NO encontrada")
+
     def cargar_documentos(self) -> List[Document]:
         """
         Convierte el CSV en documentos de LangChain.
 
-        Metadatos:
-        - titulo: nombre del documento
-        - tipo: clase de documento (guía, boletín, etc.)
-        - pagina: número de página
-        - id_chunk: identificador único del fragmento
-        - archivo: ruta del archivo original
+        Incluye embeddings si están disponibles.
         """
         documentos = []
         errores = 0
+        embeddings_cargados = 0
 
         for idx, fila in self.df.iterrows():
             try:
@@ -54,7 +64,14 @@ class CSVLoader:
                     "archivo": self._extraer_archivo(fila),
                 }
 
-                # 3. Crear documento
+                # 3. Añadir embedding si existe
+                if self.cargar_embeddings and 'embedding' in self.df.columns:
+                    embedding = self._extraer_embedding(fila)
+                    if embedding is not None:
+                        metadata["embedding"] = embedding
+                        embeddings_cargados += 1
+
+                # 4. Crear documento
                 documentos.append(Document(
                     page_content=texto,
                     metadata=metadata
@@ -62,10 +79,12 @@ class CSVLoader:
 
             except Exception as e:
                 errores += 1
-                if errores <= 3:  # Mostrar solo primeros errores
+                if errores <= 3:
                     print(f"⚠️ Error fila {idx}: {e}")
 
         print(f"✅ Documentos cargados: {len(documentos)}")
+        if embeddings_cargados > 0:
+            print(f"🔢 Embeddings cargados: {embeddings_cargados}")
         if errores:
             print(f"⚠️ Filas con error: {errores}")
 
@@ -116,6 +135,46 @@ class CSVLoader:
                 return str(fila[col])
         return "desconocido"
 
+    def _extraer_embedding(self, fila) -> Optional[List[float]]:
+        """
+        Extrae y parsea el embedding de la fila.
+
+        Soporta formatos:
+        - JSON string: "[0.1, 0.2, 0.3]"
+        - Python list string: "[0.1, 0.2, 0.3]"
+        - String con números separados por comas: "0.1,0.2,0.3"
+        """
+        embedding_val = fila.get('embedding')
+
+        if pd.isna(embedding_val):
+            return None
+
+        if isinstance(embedding_val, list):
+            return embedding_val
+
+        if isinstance(embedding_val, str):
+            embedding_str = embedding_val.strip()
+
+            # Intentar diferentes formatos
+            try:
+                # Formato JSON
+                return json.loads(embedding_str)
+            except:
+                try:
+                    # Formato Python list (con single quotes)
+                    return ast.literal_eval(embedding_str)
+                except:
+                    try:
+                        # Formato con números separados por comas
+                        # Quitar corchetes si existen
+                        clean_str = embedding_str.strip('[]')
+                        # Dividir por comas y convertir a float
+                        return [float(x.strip()) for x in clean_str.split(',') if x.strip()]
+                    except:
+                        print(f"⚠️ No se pudo parsear embedding: {embedding_str[:50]}...")
+                        return None
+        return None
+
     def resumen(self):
         """Muestra estadísticas básicas"""
         print("\n" + "=" * 40)
@@ -134,6 +193,10 @@ class CSVLoader:
         if 'page' in self.df:
             print(f"📌 Páginas: {self.df['page'].min()} - {self.df['page'].max()}")
 
+        if 'embedding' in self.df:
+            con_embedding = self.df['embedding'].notna().sum()
+            print(f"\n🔢 Embeddings: {con_embedding}/{len(self.df)} chunks con embedding")
+
         print("=" * 40)
 
 
@@ -143,7 +206,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     print("=" * 50)
-    print("🧪 PRUEBA CARGADOR")
+    print("🧪 PRUEBA CARGADOR CON EMBEDDINGS")
     print("=" * 50)
 
     # Buscar CSV en la carpeta chunks
@@ -169,8 +232,9 @@ if __name__ == "__main__":
 
     print(f"\n📂 Usando: {archivo}")
 
-    # Probar cargador
-    cargador = CSVLoader(archivo)
+    # Probar cargador CON embeddings
+    print("\n🔧 Probando con embeddings...")
+    cargador = CSVLoader(archivo, cargar_embeddings=True)
     cargador.resumen()
 
     documentos = cargador.cargar_documentos()
@@ -183,6 +247,12 @@ if __name__ == "__main__":
             print(f"📌 Título: {doc.metadata['titulo']}")
             print(f"📌 Tipo: {doc.metadata['tipo']}")
             print(f"📌 Página: {doc.metadata['pagina']}")
+
+            # Mostrar info del embedding si existe
+            if 'embedding' in doc.metadata:
+                emb = doc.metadata['embedding']
+                print(f"🔢 Embedding: dimensión {len(emb)}, primeros 5 valores: {emb[:5]}")
+
             print(f"📝 Texto: {doc.page_content[:150]}...")
 
     print(f"\n✅ Prueba completada")
