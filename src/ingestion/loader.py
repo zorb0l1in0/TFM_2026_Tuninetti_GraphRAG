@@ -58,10 +58,10 @@ class CSVLoader:
                 # 2. Metadatos esenciales
                 metadata = {
                     "titulo": self._extraer_titulo(fila),
-                    "tipo": self._extraer_tipo(fila),
-                    "pagina": self._extraer_pagina(fila),
-                    "id_chunk": self._extraer_id_chunk(fila, idx),
-                    "archivo": self._extraer_archivo(fila),
+                    #"tipo": self._extraer_tipo(fila),
+                    #"pagina": self._extraer_pagina(fila),
+                    #"id_chunk": self._extraer_id_chunk(fila, idx),
+                    #"archivo": self._extraer_archivo(fila),
                 }
 
                 # 3. Añadir embedding si existe

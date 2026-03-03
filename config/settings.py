@@ -2,17 +2,17 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Cargar variables de entorno
-load_dotenv()
+
 
 # Directorio raíz del proyecto
 PROJECT_ROOT = Path(__file__).parent.parent
-
+# Cargar variables de entorno
+load_dotenv()
 # Directorios de datos
 DATA_DIR = PROJECT_ROOT / "data"
 
 # Directorio específico para chunks
-CHUNKS_DIR = DATA_DIR / "chunks"
+CHUNKS_DIR = DATA_DIR /"processed" / "chunks"
 
 # Crear directorios si no existen
 CHUNKS_DIR.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,8 @@ Inspirado en el paper Microsoft GraphRAG.
 """
 
 import os
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
+from pathlib import Path
 import pandas as pd
 import json
 import ast
@@ -12,10 +13,8 @@ from dotenv import load_dotenv
 
 from langchain_community.graphs import Neo4jGraph
 from langchain_core.documents import Document
-
-# 👇 IMPORTAR el extractor (NO importar LLMGraphTransformer directamente)
 from src.extraction.entity_relation_extractor import EntityRelationExtractor
-
+from src.extraction.entity_relation_labels_extractor import HybridDocumentAnalyzer
 load_dotenv()
 
 
@@ -23,38 +22,168 @@ class GraphBuilder:
     """
     Constructor de grafos que USA el EntityRelationExtractor
     para obtener nodos y relaciones, y los guarda en Neo4j.
+
+    Ahora soporta descubrimiento automático de vocabulario con HybridDocumentAnalyzer.
     """
 
     def __init__(
             self,
             model_name="gpt-4o-mini",
             batch_size=5,
-            verbose=True
+            verbose=True,
+            auto_discover_vocabulary: bool = False,
+            vocabulary_document: Optional[Path] = None,
+            allowed_nodes: Optional[List[str]] = None,
+            allowed_relationships: Optional[List[str]] = None,
+            top_n: int = 15,
+            threshold_percentual: float = 0.05,  # 👈 5% di default
+            min_frecuencia: int = 2
     ):
         """
         Inicializa el builder con un extractor interno.
+
+        Args:
+            auto_discover_vocabulary: si True, analiza el documento para descubrir nodos y relaciones
+            vocabulary_document: documento específico para extraer vocabulario (opcional)
+            allowed_nodes: lista manual de nodos permitidos (opcional)
+            allowed_relationships: lista manual de relaciones permitidas (opcional)
+            top_n: para el analizador híbrido
+            min_frecuencia: para el analizador híbrido
         """
         self.batch_size = batch_size
         self.verbose = verbose
+        self.auto_discover_vocabulary = auto_discover_vocabulary
+        self.vocabulary_document = vocabulary_document
+        self.top_n = top_n
+        self.min_frecuencia = min_frecuencia
+        self.threshold_percentual = threshold_percentual
 
-        # 1. Verificar API key (lo hará el extractor, pero verificamos antes)
+        # 1. Verificar API key
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("❌ OPENAI_API_KEY no encontrada en .env")
 
-        # 2. 👇 CREAR EXTRACTOR INTERNO (él maneja el LLM y transformer)
+        # 2. Preparar vocabulario (si es necesario)
+        final_allowed_nodes = allowed_nodes
+        final_allowed_relationships = allowed_relationships
+
+        # Si hay descubrimiento automático, analizar el documento
+        if auto_discover_vocabulary:
+            if vocabulary_document:
+                # Usar documento específico para vocabulario
+                final_allowed_nodes, final_allowed_relationships = self._descubre_vocabulario(vocabulary_document)
+            else:
+                # Descubrimiento diferido: se hará cuando se llame a construir()
+                # con los primeros documentos
+                if self.verbose:
+                    print("🔍 Modo descubrimiento automático: se analizarán los primeros documentos")
+        elif not allowed_nodes and not allowed_relationships:
+            if self.verbose:
+                print("⚠️ Sin vocabulario definido. El extractor usará todas las entidades posibles.")
+
+        # 3. 👇 CREAR EXTRACTOR INTERNO con el vocabulario (si lo tenemos)
         self.extractor = EntityRelationExtractor(
             model_name=model_name,
-            verbose=verbose
+            verbose=verbose,
+            allowed_nodes=final_allowed_nodes,
+            allowed_relationships=final_allowed_relationships,
+            auto_discover=(auto_discover_vocabulary and not vocabulary_document),
+            threshold_percentual=threshold_percentual,  # 👈 PASSA QUI
+            min_frecuencia=min_frecuencia,
+            top_n=top_n
         )
 
-        # 3. Conexión a Neo4j (solo el builder guarda, el extractor no)
+        # 4. Conexión a Neo4j
         self.graph = self._conectar_neo4j()
+
+        # 5. Analyzer para descubrimiento (si se necesita)
+        if auto_discover_vocabulary:
+            self.analyzer = HybridDocumentAnalyzer(
+                modelo_spacy="es_core_news_lg",
+                patron_tabla=["Fila de tabla", "Tabla"]
+            )
+        else:
+            self.analyzer = None
 
         if self.verbose:
             print(f"✅ GraphBuilder inicializado con extractor interno")
             print(f"   Modelo: {model_name}")
             print(f"   Batch: {batch_size}")
+            if final_allowed_nodes:
+                print(f"   📋 Nodos permitidos: {len(final_allowed_nodes)}")
+            if final_allowed_relationships:
+                print(f"   🔗 Relaciones permitidas: {len(final_allowed_relationships)}")
+
+    def _descubre_vocabulario(self, documento: Path) -> Tuple[List[str], List[str]]:
+        """
+        Descubre nodos y relaciones usando HybridDocumentAnalyzer.
+
+        Args:
+            documento: Path al documento para analizar
+
+        Returns:
+            (allowed_nodes, allowed_relationships)
+        """
+        if self.verbose:
+            print(f"\n🔍 Descubriendo vocabulario desde: {documento.name}")
+
+        if not self.analyzer:
+            self.analyzer = HybridDocumentAnalyzer(
+                modelo_spacy="es_core_news_lg",
+                patron_tabla=["Fila de tabla", "Tabla"]
+            )
+
+        resultado = self.analyzer.analiza(
+            documento,
+            top_n=self.top_n,
+            min_frecuencia=self.min_frecuencia,
+            verbose=self.verbose
+        )
+
+        nodes = resultado['allowed_nodes']
+        relations = resultado['allowed_relationships']
+
+        if self.verbose:
+            print(f"\n✅ Vocabulario descubierto:")
+            print(f"   📋 Nodos ({len(nodes)}): {nodes}")
+            print(f"   🔗 Relaciones ({len(relations)}): {relations}")
+
+        return nodes, relations
+
+    def _prepara_vocabulario_desde_documentos(self, documentos: List[Document]):
+        """
+        Prepara vocabulario analizando los primeros documentos.
+        Útil cuando no se especifica un documento de vocabulario.
+        """
+        if not documentos:
+            return
+
+        if self.verbose:
+            print("\n🔍 Analizando documentos para descubrir vocabulario...")
+
+        # Crear archivo temporal con el contenido de los primeros documentos
+        temp_content = "\n\n".join([doc.page_content[:2000] for doc in documentos[:3]])
+        temp_path = Path("temp_vocab.txt")
+        temp_path.write_text(temp_content, encoding="utf-8")
+
+        # Descubrir vocabulario
+        nodes, relations = self._descubre_vocabulario(temp_path)
+
+        # Limpiar
+        temp_path.unlink()
+
+        # Actualizar extractor
+        self.extractor.allowed_nodes = nodes
+        self.extractor.allowed_relationships = relations
+
+        # Reinicializar transformer con nuevo vocabulario
+        self.extractor.transformer = LLMGraphTransformer(
+            llm=self.extractor.llm,
+            node_properties=["description"],
+            relationship_properties=["description"],
+            allowed_nodes=nodes,
+            allowed_relationships=relations
+        )
 
     def _conectar_neo4j(self) -> Neo4jGraph:
         """Conecta a Neo4j"""
@@ -80,9 +209,17 @@ class GraphBuilder:
     def construir(self, documentos: List[Document], limpiar: bool = True) -> Tuple[int, int]:
         """
         Construye el grafo a partir de los documentos USANDO EL EXTRACTOR.
+
+        Si está en modo auto_discover_vocabulary y no hay vocabulario,
+        lo descubre de los primeros documentos.
         """
         if not documentos:
             return (0, 0)
+
+        # 👇 NUEVO: Si estamos en modo descubrimiento pero no tenemos vocabulario aún
+        if self.auto_discover_vocabulary and not self.vocabulary_document:
+            if not self.extractor.allowed_nodes:
+                self._prepara_vocabulario_desde_documentos(documentos)
 
         print("\n🕸️ Construyendo grafo...")
         if limpiar:
@@ -106,13 +243,13 @@ class GraphBuilder:
         Procesa un lote USANDO EL EXTRACTOR.
         """
         try:
-            # 👇 USAR EL EXTRACTOR (NO transformer directamente)
+            # Usar el extractor
             graph_documents, entidades, relaciones = self.extractor.extract(
                 documents=lote,
                 batch_size=len(lote)  # Un solo lote
             )
 
-            # Guardar en Neo4j (responsabilidad del builder)
+            # Guardar en Neo4j
             self.graph.add_graph_documents(
                 graph_documents,
                 baseEntityLabel=True,
@@ -126,10 +263,45 @@ class GraphBuilder:
             print(f"   ❌ Error lote: {e}")
             return (0, 0)
 
+    def construir_con_vocabulario(
+            self,
+            documentos: List[Document],
+            documento_vocabulario: Path,
+            limpiar: bool = True
+    ) -> Tuple[int, int]:
+        """
+        Construye el grafo usando un documento específico para el vocabulario.
+
+        Args:
+            documentos: documentos a procesar
+            documento_vocabulario: documento del que extraer nodos y relaciones
+            limpiar: si debe limpiar el grafo antes
+
+        Returns:
+            (total_entidades, total_relaciones)
+        """
+        # Descubrir vocabulario
+        nodes, relations = self._descubre_vocabulario(documento_vocabulario)
+
+        # Actualizar extractor
+        self.extractor.allowed_nodes = nodes
+        self.extractor.allowed_relationships = relations
+
+        # Reinicializar transformer
+        from langchain_experimental.graph_transformers import LLMGraphTransformer
+        self.extractor.transformer = LLMGraphTransformer(
+            llm=self.extractor.llm,
+            node_properties=["description"],
+            relationship_properties=["description"],
+            allowed_nodes=nodes,
+            allowed_relationships=relations
+        )
+
+        # Construir grafo
+        return self.construir(documentos, limpiar)
+
     def asociar_embeddings(self, loader):
-        """
-        Asocia los embeddings del CSV a los nodos del grafo.
-        """
+        """Asocia los embeddings del CSV a los nodos del grafo."""
         print("\n🔗 Asociando embeddings...")
 
         if not hasattr(loader, 'df') or 'embedding' not in loader.df.columns:
