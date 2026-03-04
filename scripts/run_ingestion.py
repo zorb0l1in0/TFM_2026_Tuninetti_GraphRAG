@@ -14,8 +14,8 @@ import tempfile
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.name_entity_recognition.cargador_chunks import CSVLoader
-from src.name_entity_recognition.graph_builder import GraphBuilder
-from src.extraction.ontology_extractor import HybridDocumentAnalyzer
+from src.graph_builder import GraphBuilder
+from src.name_entity_recognition.ontology_extractor import HybridDocumentAnalyzer
 from src.extraction.entity_relation_extractor import EntityRelationExtractor
 from langchain_core.documents import Document
 

@@ -6,16 +6,26 @@ Pipeline NER di due passi con verifica ontologica.
   Paso 1  — Detección de spans   (sin tipo)
   Paso 2  — Clasificación        (guiada por ontología)
   Paso 2b — Verificación         (comprobación de restricciones)
+
+L'ontologia può essere fornita in due modi:
+  A) YAML existente      → PipelineNERDosPasos(ruta_ontologia="ontology.yaml")
+  B) Descubrimiento auto → PipelineNERDosPasos(ruta_vocabulario=Path("doc.md"))
+                           Genera data/ner/ontologia/borrador_ontologia.json
+                           que debe revisarse para crear el YAML definitivo.
 """
 
 import json
+from pathlib import Path
+from typing import Optional
 
 from langchain_openai import ChatOpenAI
 
-from .ontologia import CargadorOntologia
+from .ontologia import CargadorOntologia, HybridDocumentAnalyzer
 from .verificador import VerificadorRestricciones
 from .schemas import RelacionItem
 from .prompts import construir_cadena_paso1, construir_cadena_paso2
+
+_RUTA_BORRADOR = Path("data/ner/ontologia/borrador_ontologia.json")
 
 
 class PipelineNERDosPasos:
@@ -26,11 +36,65 @@ class PipelineNERDosPasos:
 
     def __init__(
         self,
-        ruta_ontologia: str,
-        modelo: str = "gpt-4o",
+        # ── Fuente de ontología (una de las dos) ──────────────────────────
+        ruta_ontologia:   Optional[str]  = None,  # A) YAML estructurado
+        ruta_vocabulario: Optional[Path] = None,  # B) doc para descubrimiento
+        # ── Parámetros del analizador (modo B) ────────────────────────────
+        top_n:                int   = 15,
+        min_frecuencia:       int   = 2,
+        threshold_percentual: float = 0.05,
+        # ── LLM ──────────────────────────────────────────────────────────
+        modelo:      str   = "gpt-4o",
         temperatura: float = 0.0,
     ):
-        self.ontologia    = CargadorOntologia(ruta_ontologia)
+        # ── Modo A: YAML ──────────────────────────────────────────────────
+        if ruta_ontologia:
+            self.ontologia = CargadorOntologia(ruta_ontologia)
+
+        # ── Modo B: descubrimiento automático ─────────────────────────────
+        elif ruta_vocabulario:
+            print(f"🔍 Descubriendo vocabulario desde: {Path(ruta_vocabulario).name}")
+            analizador = HybridDocumentAnalyzer(
+                modelo_spacy="es_core_news_lg",
+                patron_tabla=["Fila de tabla", "Tabla"],
+            )
+            resultado = analizador.analiza(
+                Path(ruta_vocabulario),
+                top_n=top_n,
+                min_frecuencia=min_frecuencia,
+                threshold_percentual=threshold_percentual,
+                verbose=True,
+            )
+
+            # Guardar borrador para revisión manual
+            _RUTA_BORRADOR.parent.mkdir(parents=True, exist_ok=True)
+            analizador.guardar_ontology_json(
+                ruta_salida=_RUTA_BORRADOR,
+                nodos=resultado["allowed_nodes"],
+                relaciones=resultado["allowed_relationships"],
+                archivo_fuente=str(ruta_vocabulario),
+            )
+            print()
+            print("⚠️  ATENCIÓN: se ha generado un borrador de ontología en:")
+            print(f"   📄 {_RUTA_BORRADOR}")
+            print("   Revísalo y conviértelo en un YAML estructurado con")
+            print("   entities/relations/constraints antes de usarlo en producción.")
+            print("   Luego pasa ruta_ontologia='ruta/al/ontology.yaml' al pipeline.")
+            print()
+
+            self.ontologia = _OntologiaMinimal(
+                nodes=resultado["allowed_nodes"],
+                relationships=resultado["allowed_relationships"],
+            )
+            print(f"✅ Vocabulario cargado: {len(resultado['allowed_nodes'])} nodos, "
+                  f"{len(resultado['allowed_relationships'])} relaciones")
+
+        else:
+            raise ValueError(
+                "Proporciona ruta_ontologia (YAML definitivo) "
+                "o ruta_vocabulario (documento para descubrir vocabulario)."
+            )
+
         self.llm          = ChatOpenAI(model=modelo, temperature=temperatura)
         self.cadena_paso1 = construir_cadena_paso1(self.llm)
         self.cadena_paso2 = construir_cadena_paso2(self.llm, self.ontologia)
@@ -41,7 +105,7 @@ class PipelineNERDosPasos:
         """Detección de spans sin tipo. Devuelve lista de {text, start, end}."""
         print("  [Paso 1] Detección de spans...")
         resultado = self.cadena_paso1.invoke({"text": texto})
-        spans = resultado.get("spans", []) if isinstance(resultado, dict) else []
+        spans     = resultado.get("spans", []) if isinstance(resultado, dict) else []
         print(f"  [Paso 1] {len(spans)} spans candidatos encontrados.")
         return spans
 
@@ -56,7 +120,7 @@ class PipelineNERDosPasos:
         spans_json = json.dumps(spans, ensure_ascii=False, indent=2)
         resultado  = self.cadena_paso2.invoke({"text": texto, "spans_json": spans_json})
 
-        entidades_raw  = resultado.get("entidades", [])  if isinstance(resultado, dict) else []
+        entidades_raw  = resultado.get("entidades",  []) if isinstance(resultado, dict) else []
         relaciones_raw = resultado.get("relaciones", []) if isinstance(resultado, dict) else []
 
         # Filtrar entidades NONE y tipos no válidos
@@ -142,3 +206,35 @@ class PipelineNERDosPasos:
             lineas.append(linea)
 
         return "\n".join(lineas)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Adattatore interno per il modo B
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _OntologiaMinimal:
+    """
+    Implementa la stessa interfaccia di CargadorOntologia
+    da liste di nodi/relazioni scoperte da HybridDocumentAnalyzer.
+    Senza domain/range il VerificadorRestricciones accetta tutte le relazioni.
+    """
+
+    def __init__(self, nodes: list[str], relationships: list[str]):
+        self._nodes         = nodes
+        self._relationships = relationships
+
+    def descripcion_entidades(self) -> str:
+        return "\n".join(f"- **{n}**" for n in self._nodes)
+
+    def descripcion_relaciones(self) -> str:
+        return "\n".join(f"- **{r}**" for r in self._relationships)
+
+    def texto_restricciones(self) -> str:
+        return ""
+
+    def tipos_entidad_validos(self) -> list[str]:
+        return list(self._nodes)
+
+    def restricciones_relaciones(self) -> dict:
+        return {r: {"domain": self._nodes, "range": self._nodes}
+                for r in self._relationships}
