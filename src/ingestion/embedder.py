@@ -14,14 +14,14 @@ import os
 import argparse
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 import json
 from tqdm import tqdm
 import hashlib
 from datetime import datetime
 import time
 from dotenv import load_dotenv
-from src.ingestion.splitter import ChunkerSeccionesMarkdown
+from src.chunking.splitter import ChunkerSeccionesMarkdown
 
 try:
     from openai import OpenAI

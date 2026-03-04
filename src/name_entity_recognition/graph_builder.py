@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from langchain_community.graphs import Neo4jGraph
 from langchain_core.documents import Document
 from src.extraction.entity_relation_extractor import EntityRelationExtractor
-from src.extraction.entity_relation_labels_extractor import HybridDocumentAnalyzer
+from src.extraction.ontology_extractor import HybridDocumentAnalyzer
 load_dotenv()
 
 

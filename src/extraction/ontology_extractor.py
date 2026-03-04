@@ -3,6 +3,9 @@ from collections import Counter
 from pathlib import Path
 import spacy
 import unicodedata  # Importado aquí para usarlo en toda la clase
+import json
+
+
 
 class HybridDocumentAnalyzer:
     """
@@ -337,6 +340,29 @@ class HybridDocumentAnalyzer:
             'relaciones_completas': relaciones_texto.most_common(20)
         }
 
+    def guardar_ontology_json(self, ruta_salida, nodos, relaciones, archivo_fuente):
+        """
+        Guarda un archivo ontology.json con los nodos y relaciones candidatos extraídos.
+
+        Args:
+            ruta_salida: Path al archivo ontology.json
+            nodos: lista de strings de nodos candidatos
+            relaciones: lista de strings de relaciones candidatas
+            archivo_fuente: nombre del documento analizado
+        """
+        estructura = {
+            "metadata": {
+                "generated_from": archivo_fuente,
+                "generator": "HybridDocumentAnalyzer",
+                "version": "0.1.0"
+            },
+            "candidate_entities": sorted(nodos),
+            "candidate_relations": sorted(relaciones)
+        }
+
+        ruta_salida.write_text(json.dumps(estructura, indent=4, ensure_ascii=False), encoding="utf-8")
+        print(f"📁 ontology.json generado en: {ruta_salida}")
+
 
 # Ejemplo de uso
 if __name__ == "__main__":
@@ -347,7 +373,7 @@ if __name__ == "__main__":
     )
 
     # Analiza un documento
-    ruta = Path("../../data/raw/notas_de_corte_grados_cupo_general.md")
+    ruta = Path("../../data/raw/reglamento_ull_simultaneidad_dobles_titulaciones.md")
     if ruta.exists():
         resultado = analizador.analiza(ruta, verbose=True, min_frecuencia=1)  # min_frecuencia=1 para capturar relaciones
 
@@ -357,8 +383,12 @@ if __name__ == "__main__":
         print(f"\nallowed_nodes = {resultado['allowed_nodes']}")
         print(f"\nallowed_relationships = {resultado['allowed_relationships']}")
 
-        print("\n" + "="*50)
-        print("ESTADÍSTICAS")
-        print("="*50)
-        for k, v in resultado['estadisticas'].items():
-            print(f"  {k}: {v}")
+        salida = Path("../../data/ner/ontologia/ontology.json")
+        analizador.guardar_ontology_json(
+            ruta_salida=salida,
+            nodos=resultado["allowed_nodes"],
+            relaciones=resultado["allowed_relationships"],
+            archivo_fuente=ruta.name
+        )
+
+        print("Ontología guardada exitosamente.")
