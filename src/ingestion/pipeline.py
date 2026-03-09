@@ -50,7 +50,7 @@ class IngestionPipeline:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: Optional[str] = os.getenv('OPENAI_API_KEY'),
         modelo_embeddings: str = "text-embedding-3-small",
         max_caracteres_chunk: int = 1500,
         batch_size: int = 20,
@@ -80,8 +80,8 @@ class IngestionPipeline:
         """
         chunks   = self._chunking(carpeta_entrada, max_chunks_por_doc)
         embedder = self._get_embedder()
-        df       = embedder.generar(chunks, incluir_metadata=incluir_metadata)
-        embedder.guardar_csv(df, archivo_salida)
+        df = embedder._generar_embeddings_dataframe(chunks)
+        embedder._guardar_csv(df, archivo_salida)
         print(f"\n🎉 Pipeline completada — {len(df)} chunks en {archivo_salida}")
         return df
 

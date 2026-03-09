@@ -21,7 +21,7 @@ import hashlib
 from datetime import datetime
 import time
 from dotenv import load_dotenv
-from src.chunking.splitter import ChunkerSeccionesMarkdown
+from src.ingestion import ChunkerSeccionesMarkdown
 
 try:
     from openai import OpenAI
