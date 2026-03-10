@@ -34,8 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from langchain_community.graphs import Neo4jGraph
 
-from entity_resolver import EntityMap, EntityResolver  # ← NUEVO
-from graph_building.entity_resolver import EntityMap, EntityResolver
+from .entity_resolver import EntityMap, EntityResolver
 
 load_dotenv()
 
