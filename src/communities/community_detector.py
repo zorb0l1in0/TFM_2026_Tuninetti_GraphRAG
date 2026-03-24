@@ -32,10 +32,9 @@ Uso típico (después de entity_summarizer.py):
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
+from ..common.clients import get_langchain_llm
 from langchain_community.graphs import Neo4jGraph
 
-_MODEL           = "gpt-4o"
 _GDS_GRAPH_NAME  = "entidades_graph"
 _SLEEP_BETWEEN_CALLS = 0.5
 _MAX_NODOS_EN_PROMPT = 30
@@ -80,7 +79,7 @@ class CommunityDetector:
         self.max_nodos_en_prompt = max_nodos_en_prompt
         self.gds_graph_name      = gds_graph_name
         self.max_levels          = max_levels
-        self.client              = OpenAI()
+        self.client              = get_langchain_llm()
 
     # ── Punto de entrada ──────────────────────────────────────────────────────
 
@@ -285,12 +284,8 @@ class CommunityDetector:
         miembros_prompt = miembros_sorted[: self.max_nodos_en_prompt]
 
         prompt   = self._build_community_prompt(miembros_prompt, len(miembros), level)
-        response = self.client.chat.completions.create(
-            model=_MODEL,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content.strip()
+        response = self.client.invoke(prompt)
+        return response.content.strip()
 
     def _build_community_prompt(
         self,

@@ -1,44 +1,34 @@
 """
-run_pipeline.py
----------------
-Script maestro que coordina todo el pipeline:
+master_pipeline.py
+------------------
+Pipeline maestro GraphRAG:
 
-  STEP 1 — Chunking + embeddings   (ingestion/)
-     Si el CSV ya existe y no hay archivos .md más nuevos → lo salta
-
-  STEP 2 — Ontología               (ner/)
-     Si ontology.yaml existe → lo usa
-     Si no existe → descubre vocabulario, genera borrador_ontologia.json
-                    y DETIENE el pipeline con instrucciones al usuario
-
-  STEP 3 — NER                     (ner/)
-     Si ner_resultados.json existe y es más reciente que el CSV → lo salta
-     Si no → procesa los chunks y guarda ner_resultados.json
-
-  STEP 4 — Grafo Neo4j             (graph_building/)
-     Fase A: entity resolution y deduplicación (entity_resolver.py)
-     Fase B: summarización de entidades y relaciones (entity_summarizer.py)
-     Fase C: community detection multi-nivel Leiden (community_detector.py)
-
-Uso:
-  python run_pipeline.py --solo-summaries
-  python run_pipeline.py --forzar-embeddings   # regenera CSV aunque exista
-  python run_pipeline.py --forzar-ner          # re-ejecuta NER
-  python run_pipeline.py --forzar-grafo        # re-construye el grafo
-  python run_pipeline.py --max-chunks 20       # limita chunks para pruebas
-  python run_pipeline.py --skip-neo4j          # salta el STEP 4
+  STEP 1 — Chunking + embeddings
+  STEP 2 — Ontología (AUTOMÁTICA)
+  STEP 3 — NER (paralelizado)
+  STEP 4 — Grafo Neo4j
 """
 
 import argparse
 import json
+import os
+import re
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
+from src.common.clients import MODEL_PASO1
 from dotenv import load_dotenv
-
 load_dotenv()
 
-# ── Rutas del proyecto ────────────────────────────────────────────────────────
+# Forza flush immediato su Windows/PyCharm
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
+# -------------------------------
+# Rutas del proyecto
+# -------------------------------
 RUTA_RAW        = Path("../data/raw")
 RUTA_CSV        = Path("../data/processed/chunks/chunks_con_embeddings.csv")
 RUTA_ONTOLOGIA  = Path("../data/ner/ontologia/ontology.yaml")
@@ -46,147 +36,170 @@ RUTA_BORRADOR   = Path("../data/ner/ontologia/borrador_ontologia.json")
 RUTA_RESULTADOS = Path("../data/ner/ner_resultados.json")
 RUTA_ACRONIMOS  = Path("../data/acronimos.yaml")
 
+_print_lock = threading.Lock()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — Chunking + Embeddings
-# ─────────────────────────────────────────────────────────────────────────────
+def safe_print(*args, **kwargs):
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    msg = sep.join(str(a) for a in args) + end
+    with _print_lock:
+        sys.stdout.write(msg)
+        sys.stdout.flush()
 
+
+# ============================================================================
+# KEEPALIVE — evita que el servidor descargue el modelo por inactividad
+# ============================================================================
+def _keepalive_loop(stop_event: threading.Event):
+    """Manda una petición mínima cada 30s para mantener el modelo cargado."""
+    from openai import OpenAI
+    base_url = os.getenv("LLM_BASE_URL")
+    api_key  = os.getenv("LLM_API_KEY")
+    model = MODEL_PASO1
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    while not stop_event.is_set():
+        stop_event.wait(30)
+        if stop_event.is_set():
+            break
+        try:
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+                timeout=10,
+            )
+            safe_print("  🔄 Keepalive OK", flush=True)
+        except Exception as e:
+            safe_print(f"  ⚠ Keepalive fallito: {e}")
+
+
+def iniciar_keepalive() -> threading.Event:
+    stop = threading.Event()
+    threading.Thread(target=_keepalive_loop, args=(stop,), daemon=True).start()
+    safe_print("  🟢 Keepalive iniciado (ping cada 30s)")
+    return stop
+
+
+# ============================================================================
+# STEP 1 — INGESTIÓN
+# ============================================================================
 def paso_ingestion(forzar: bool = False) -> bool:
-    print("\n" + "=" * 60)
-    print("📦 STEP 1: CHUNKING + EMBEDDINGS")
-    print("=" * 60)
+    safe_print("\n" + "=" * 60)
+    safe_print("📦 STEP 1: CHUNKING + EMBEDDINGS")
+    safe_print("=" * 60)
 
     archivos_md = list(RUTA_RAW.glob("**/*.md"))
     if not archivos_md:
-        print(f"❌ No se encontraron archivos .md en {RUTA_RAW}")
+        safe_print(f"❌ No se encontraron archivos .md en {RUTA_RAW}")
         return False
-
-    print(f"   📄 Archivos .md encontrados: {len(archivos_md)}")
-    for f in archivos_md:
-        print(f"      • {f.name}")
 
     if not forzar and RUTA_CSV.exists():
-        csv_mtime    = RUTA_CSV.stat().st_mtime
-        md_más_nuevo = max(f.stat().st_mtime for f in archivos_md)
-
-        if csv_mtime >= md_más_nuevo:
-            print(f"\n✅ CSV actualizado: {RUTA_CSV}")
-            print("   (usa --forzar-embeddings para regenerar)")
+        csv_mtime = RUTA_CSV.stat().st_mtime
+        md_newest = max(f.stat().st_mtime for f in archivos_md)
+        if csv_mtime >= md_newest:
+            safe_print("✅ CSV actualizado.")
             return True
-        else:
-            print("\n⚠️  Hay archivos .md más nuevos que el CSV → regenerando...")
 
-    print("\n🔄 Ejecutando chunking + embeddings...")
+    safe_print("🔄 Ejecutando ingestion...")
     try:
         from src.ingestion.pipeline import IngestionPipeline
-
         pipeline = IngestionPipeline()
         RUTA_CSV.parent.mkdir(parents=True, exist_ok=True)
-        pipeline.ejecutar(
-            carpeta_entrada=str(RUTA_RAW),
-            archivo_salida=str(RUTA_CSV),
-        )
-        print(f"\n✅ CSV generado: {RUTA_CSV}")
+        pipeline.ejecutar(str(RUTA_RAW), str(RUTA_CSV))
+        safe_print(f"✅ CSV generado: {RUTA_CSV}")
         return True
-
     except Exception as e:
-        print(f"\n❌ Error en ingestion: {e}")
+        safe_print(f"❌ Error en ingestion: {e}")
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 2 — Ontología
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ============================================================================
+# STEP 2 — ONTOLOGÍA (AUTOMÁTICA ✔)
+# ============================================================================
 def paso_ontologia() -> bool:
-    print("\n" + "=" * 60)
-    print("📋 STEP 2: ONTOLOGÍA")
-    print("=" * 60)
+    safe_print("\n" + "=" * 60)
+    safe_print("📋 STEP 2: ONTOLOGÍA")
+    safe_print("=" * 60)
 
     if RUTA_ONTOLOGIA.exists():
-        print(f"✅ Ontología encontrada: {RUTA_ONTOLOGIA}")
+        safe_print(f"✅ Ontología ya existe: {RUTA_ONTOLOGIA}")
         return True
 
-    print(f"⚠️  No se encontró ontology.yaml en {RUTA_ONTOLOGIA.parent}")
-    print("🔍 Descubriendo vocabulario desde los archivos .md...")
+    safe_print("⚠️  Ontología no encontrada. Generación automática...")
 
     try:
         from src.name_entity_recognition.ontologia import HybridDocumentAnalyzer
+        from langchain_core.messages import HumanMessage
+        from src.common.clients import get_langchain_llm_paso2
+        from src.name_entity_recognition.prompts import PROMPT_GENERAR_ONTOLOGIA
 
         archivos_md = list(RUTA_RAW.glob("**/*.md"))
-        temp = RUTA_BORRADOR.parent / "_temp_vocab.md"
-        temp.parent.mkdir(parents=True, exist_ok=True)
-        temp.write_text(
-            "\n\n".join(f.read_text(encoding="utf-8") for f in archivos_md),
-            encoding="utf-8",
+        contenido_md = "\n\n".join(
+            f.read_text(encoding="utf-8") for f in archivos_md
         )
+
+        safe_print("🔧 Generando borrador_ontologia.json...")
+        RUTA_BORRADOR.parent.mkdir(parents=True, exist_ok=True)
+        temp_md = RUTA_BORRADOR.parent / "_temp_vocab.md"
+        temp_md.write_text(contenido_md, encoding="utf-8")
 
         analizador = HybridDocumentAnalyzer(
             modelo_spacy="es_core_news_lg",
             patron_tabla=["Fila de tabla", "Tabla"],
         )
-        resultado = analizador.analiza(temp, verbose=True)
-        temp.unlink()
+        resultado = analizador.analiza(temp_md, verbose=False)
+        temp_md.unlink()
 
-        analizador.guardar_ontology_json(
-            ruta_salida=RUTA_BORRADOR,
-            nodos=resultado["allowed_nodes"],
-            relaciones=resultado["allowed_relationships"],
-            archivo_fuente=str(RUTA_RAW),
+        borrador = {
+            "allowed_nodes": resultado["allowed_nodes"],
+            "allowed_relationships": resultado["allowed_relationships"],
+            "archivo_fuente": str(RUTA_RAW),
+        }
+        RUTA_BORRADOR.write_text(
+            json.dumps(borrador, indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
+        safe_print(f"🟦 Borrador creado: {RUTA_BORRADOR}")
+
+        safe_print("🤖 LLM generando ontology.yaml final...")
+        llm = get_langchain_llm_paso2(0.0)
+        entrada = (
+            PROMPT_GENERAR_ONTOLOGIA
+            + "\n\nBORRADOR:\n"
+            + json.dumps(borrador, indent=2, ensure_ascii=False)
+        )
+        respuesta = llm.invoke([HumanMessage(content=entrada)])
+        yaml_generado = respuesta.content
+        yaml_generado = re.sub(r"^```(?:yaml)?\s*\n?", "", yaml_generado.strip())
+        yaml_generado = re.sub(r"\n?```\s*$", "", yaml_generado.strip())
+        yaml_generado = yaml_generado.strip()
+
+        RUTA_ONTOLOGIA.parent.mkdir(parents=True, exist_ok=True)
+        RUTA_ONTOLOGIA.write_text(yaml_generado, encoding="utf-8")
+        safe_print(f"🟩 Ontología generada correctamente: {RUTA_ONTOLOGIA}")
+        safe_print("   (Revisa su contenido por si necesita ajustes finos)")
+        return True
 
     except Exception as e:
-        print(f"\n❌ Error descubriendo vocabulario: {e}")
+        safe_print(f"❌ Error generando ontología: {e}")
         return False
 
-    print()
-    print("=" * 60)
-    print("🛑  PIPELINE DETENIDO — ACCIÓN REQUERIDA")
-    print("=" * 60)
-    print()
-    print(f"  Se ha generado un borrador de ontología en:")
-    print(f"  📄 {RUTA_BORRADOR}")
-    print()
-    print("  Pasos para continuar:")
-    print("  1. Abre borrador_ontologia.json y revisa nodos y relaciones")
-    print("  2. Crea el YAML definitivo con esta estructura:")
-    print()
-    print("     entities:")
-    print("       NombreEntidad:")
-    print("         description: '...'")
-    print("         patterns: ['patrón1', 'patrón2']")
-    print("     relations:")
-    print("       nombreRelacion:")
-    print("         description: '...'")
-    print("         domain: [EntidadOrigen]")
-    print("         range:  [EntidadDestino]")
-    print("     constraints: []")
-    print()
-    print(f"  3. Guárdalo como: {RUTA_ONTOLOGIA}")
-    print("  4. Vuelve a ejecutar: python run_pipeline.py")
-    print()
-    return False
 
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================================
 # STEP 3 — NER
-# ─────────────────────────────────────────────────────────────────────────────
-
-def paso_ner(forzar: bool = False, max_chunks: int = None) -> bool:
-    print("\n" + "=" * 60)
-    print("🏷️  STEP 3: NER")
-    print("=" * 60)
+# ============================================================================
+def paso_ner(forzar: bool = False, max_chunks: int = None, workers: int = 1) -> bool:
+    safe_print("\n" + "=" * 60)
+    safe_print("🏷️  STEP 3: NER")
+    safe_print("=" * 60)
 
     if not forzar and RUTA_RESULTADOS.exists():
         csv_mtime = RUTA_CSV.stat().st_mtime if RUTA_CSV.exists() else 0
         ner_mtime = RUTA_RESULTADOS.stat().st_mtime
-
         if ner_mtime >= csv_mtime:
-            print(f"✅ ner_resultados.json actualizado: {RUTA_RESULTADOS}")
-            print("   (usa --forzar-ner para re-ejecutar)")
+            safe_print("✅ ner_resultados.json ya actualizado.")
             return True
-        else:
-            print("⚠️  El CSV es más nuevo que ner_resultados.json → re-ejecutando...")
 
     try:
         from src.name_entity_recognition.cargador_chunks import CargadorChunksCSV
@@ -197,51 +210,118 @@ def paso_ner(forzar: bool = False, max_chunks: int = None) -> bool:
 
         chunks = cargador.cargar_chunks(max_chunks=max_chunks)
         if not chunks:
-            print("❌ No se cargaron chunks.")
+            safe_print("❌ No se cargaron chunks.")
             return False
-
-        print(f"   📊 Chunks a procesar: {len(chunks)}")
 
         pipeline = PipelineNERDosPasos(ruta_ontologia=str(RUTA_ONTOLOGIA))
 
-        todos_resultados = []
-        for i, chunk in enumerate(chunks, 1):
-            print(f"\n>>> Chunk {i}/{len(chunks)} | {chunk['titulo']} [{chunk['chunk_id']}]")
-            resultado = pipeline.ejecutar(chunk["texto"])
-            resultado.update({
-                "chunk_id": chunk["chunk_id"],
-                "titulo":   chunk["titulo"],
-                "tipo":     chunk["tipo"],
-                "fuente":   chunk["fuente"],
-            })
-            todos_resultados.append(resultado)
+        todos = [None] * len(chunks)
+        errores = []
+        MAX_RETRY = 3
 
-        RUTA_RESULTADOS.parent.mkdir(parents=True, exist_ok=True)
-        with open(RUTA_RESULTADOS, "w", encoding="utf-8") as f:
-            json.dump(todos_resultados, f, ensure_ascii=False, indent=2)
+        # Keepalive — mantiene el modelo cargado durante todo el NER
+        #stop_ka = iniciar_keepalive()
 
-        print(f"\n✅ NER completado: {RUTA_RESULTADOS}")
-        print(f"   Chunks procesados : {len(todos_resultados)}")
-        print(f"   Entidades totales : {sum(len(r.get('entidades', [])) for r in todos_resultados)}")
-        print(f"   Relaciones totales: {sum(len(r.get('relaciones', [])) for r in todos_resultados)}")
+        def procesar(args):
+            idx, ch = args
+            titulo_corto = ch['titulo'][:80] + ("…" if len(ch['titulo']) > 80 else "")
+            for intento in range(1, MAX_RETRY + 1):
+                safe_print(f"  → [{idx+1:02d}/{len(chunks)}] {ch['chunk_id']} (intento {intento}/{MAX_RETRY})")
+                try:
+                    res = pipeline.ejecutar(ch["texto"])
+                    res.update({k: v for k, v in ch.items() if k != "texto"})
+                    res.pop("_log", "")
+                    safe_print(
+                        f"\n┌─ [{idx+1:02d}/{len(chunks)}] {ch['chunk_id']} "
+                        f"({len(ch['texto'])} chars)\n"
+                        f"│  {titulo_corto}\n"
+                        f"└{'─' * 58}"
+                    )
+                    return idx, res, None
+                except Exception as e:
+                    nombre = type(e).__name__
+                    es_timeout = "Timeout" in nombre or "timeout" in str(e).lower()
+                    es_unloaded = "unloaded" in str(e).lower() or "canceled" in str(e).lower()
+                    es_bad_request_cancel = "BadRequestError" in nombre and "canceled" in str(e).lower()
+                    if (es_timeout or es_unloaded or es_bad_request_cancel) and intento < MAX_RETRY:
+                        espera = 30 * intento
+                        safe_print(f"  ⚠ [{ch['chunk_id']}] {nombre} (intento {intento}) — reintentando en {espera}s...")
+                        time.sleep(espera)
+                        continue
+                    import traceback
+                    safe_print(
+                        f"\n┌─ [{idx+1:02d}/{len(chunks)}] {ch['chunk_id']} ❌ ERROR tras {intento} intentos\n"
+                        f"│  {titulo_corto}\n"
+                        f"│  {e}\n"
+                        + "\n".join(f"│  {l}" for l in traceback.format_exc().splitlines())
+                        + f"\n└{'─' * 58}"
+                    )
+                    return idx, None, str(e)
+
+        if workers == 1:
+            for i, ch in enumerate(chunks):
+                idx, resultado, error = procesar((i, ch))
+                if resultado:
+                    todos[idx] = resultado
+                else:
+                    errores.append((idx, error))
+        else:
+            completados = [0]
+            stop_hb = threading.Event()
+            t_inicio = time.time()
+
+            def heartbeat():
+                while not stop_hb.is_set():
+                    stop_hb.wait(15)
+                    if not stop_hb.is_set():
+                        elapsed = int(time.time() - t_inicio)
+                        safe_print(
+                            f"  ⏳ NER en curso... "
+                            f"{completados[0]}/{len(chunks)} chunks completados "
+                            f"({elapsed}s, {workers} workers)"
+                        )
+
+            threading.Thread(target=heartbeat, daemon=True).start()
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futuros = {ex.submit(procesar, (i, ch)): i for i, ch in enumerate(chunks)}
+                for fut in as_completed(futuros):
+                    idx, resultado, error = fut.result()
+                    completados[0] += 1
+                    if resultado:
+                        todos[idx] = resultado
+                    else:
+                        errores.append((idx, error))
+
+            stop_hb.set()
+
+
+        todos = [x for x in todos if x is not None]
+        RUTA_RESULTADOS.write_text(
+            json.dumps(todos, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+
+        safe_print("\n" + "=" * 60)
+        safe_print(f"✅ NER completado — {len(todos)} chunks procesados, {len(errores)} errores")
+        safe_print("=" * 60)
         return True
 
     except Exception as e:
-        print(f"\n❌ Error en NER: {e}")
+        safe_print(f"❌ Error NER: {e}")
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 4 — Grafo Neo4j
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ============================================================================
+# STEP 4 — NEO4J
+# ============================================================================
 def paso_grafo(forzar: bool = False) -> bool:
-    print("\n" + "=" * 60)
-    print("🕸️  STEP 4: GRAFO NEO4J")
-    print("=" * 60)
+    safe_print("\n" + "=" * 60)
+    safe_print("🕸️  STEP 4: GRAFO NEO4J")
+    safe_print("=" * 60)
 
     if not RUTA_RESULTADOS.exists():
-        print(f"❌ ner_resultados.json no encontrado: {RUTA_RESULTADOS}")
+        safe_print("❌ No existe ner_resultados.json")
         return False
 
     try:
@@ -250,122 +330,78 @@ def paso_grafo(forzar: bool = False) -> bool:
         from src.graph_building.entity_summarizer import EntitySummarizer
         from src.communities.community_detector import CommunityDetector
 
-        # Fase A: resolución de entidades
-        resolver   = EntityResolver(
-            fuzzy_threshold=0.93,
+        resolver = EntityResolver(
+            embedding_threshold=0.92,  # ← sostituisce fuzzy_threshold
+            usar_embedding_merge=True,  # ← nuovo
             ruta_acronimos=RUTA_ACRONIMOS,
-            verbose=True,
+            verbose=True
         )
-        entity_map = resolver.resolve(str(RUTA_RESULTADOS))
-        entity_map.print_stats()
 
-        # Construcción del grafo con canónicos
+        entity_map = resolver.resolve(str(RUTA_RESULTADOS))
+
         builder = GraphBuilder(
             verbose=True,
             solo_relaciones_validas=True,
             confianza_minima="medium",
             entity_map=entity_map,
         )
-        builder.construir_desde_json(
-            ruta_json=str(RUTA_RESULTADOS),
-            limpiar=forzar,
-        )
+        builder.construir_desde_json(str(RUTA_RESULTADOS), limpiar=forzar)
 
-        # Fase B: summarización de entidades y relaciones
         summarizer = EntitySummarizer(graph=builder.graph, verbose=True)
         summarizer.summarize(entity_map)
         summarizer.summarize_relations()
 
-        # Fase C: detección de comunidades
         detector = CommunityDetector(graph=builder.graph, verbose=True)
         detector.detect_and_summarize()
 
         builder.estadisticas()
+        safe_print("🟩 Grafo finalizado en Neo4j")
         return True
 
     except Exception as e:
-        print(f"\n❌ Error construyendo grafo: {e}")
+        safe_print(f"❌ Error grafo: {e}")
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ============================================================================
+# MAIN
+# ============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Pipeline maestro GraphRAG")
-    parser.add_argument("--forzar-embeddings", action="store_true",
-                        help="Regenera el CSV aunque ya exista")
-    parser.add_argument("--forzar-ner", action="store_true",
-                        help="Re-ejecuta el NER aunque ner_resultados.json sea reciente")
-    parser.add_argument("--forzar-grafo", action="store_true",
-                        help="Limpia y re-construye el grafo Neo4j")
-    parser.add_argument("--skip-neo4j", action="store_true",
-                        help="Salta el STEP 4 (construcción del grafo)")
-    parser.add_argument("--max-chunks", type=int, default=None,
-                        help="Limita el número de chunks para pruebas")
-    parser.add_argument("--solo-summaries", action="store_true",
-                        help="Re-ejecuta solo summarización y community detection")
+    parser.add_argument("--forzar-embeddings", action="store_true")
+    parser.add_argument("--forzar-ner", action="store_true")
+    parser.add_argument("--forzar-grafo", action="store_true")
+    parser.add_argument("--skip-neo4j", action="store_true")
+    parser.add_argument("--max-chunks", type=int, default=None)
+    parser.add_argument("--solo-summaries", action="store_true")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Número de workers paralelos (default=1, recomendado para LLM local)")
+
     args = parser.parse_args()
 
-    print("\n" + "=" * 60)
-    print("🚀 PIPELINE MAESTRO — GRAPHRAG")
-    print("=" * 60)
+    safe_print("\n" + "=" * 60)
+    safe_print("🚀 PIPELINE MAESTRO — GRAPHRAG")
+    safe_print("=" * 60)
 
-    # STEP 1: Chunking + Embeddings
     if not paso_ingestion(forzar=args.forzar_embeddings):
         sys.exit(1)
 
-    # STEP 2: Ontología (detiene si no hay YAML)
     if not paso_ontologia():
-        sys.exit(0)
-
-    # STEP 3: NER
-    if not paso_ner(forzar=args.forzar_ner, max_chunks=args.max_chunks):
         sys.exit(1)
 
-    # STEP 4: Grafo Neo4j
-    if args.skip_neo4j:
-        print("\n⏭️  STEP 4 saltado (--skip-neo4j)")
-    elif args.solo_summaries:
-        # Salta entity resolver e graph builder, riesegue solo B e C
-        try:
-            from src.graph_building.entity_resolver import EntityResolver
-            from src.graph_building.graph_builder import GraphBuilder
-            from src.graph_building.entity_summarizer import EntitySummarizer
-            from src.communities.community_detector import CommunityDetector
+    if not paso_ner(
+        forzar=args.forzar_ner,
+        max_chunks=args.max_chunks,
+        workers=args.workers
+    ):
+        sys.exit(1)
 
-            resolver = EntityResolver(
-                fuzzy_threshold=0.93,
-                ruta_acronimos=RUTA_ACRONIMOS,
-                verbose=True,
-            )
-            entity_map = resolver.resolve(str(RUTA_RESULTADOS))
+    if not args.skip_neo4j:
+        paso_grafo(forzar=args.forzar_grafo)
 
-            builder = GraphBuilder(verbose=True, entity_map=entity_map)
-            # No llama a construir_desde_json: el grafo ya existe en Neo4j
-
-            summarizer = EntitySummarizer(graph=builder.graph, verbose=True)
-            summarizer.summarize(entity_map)
-            summarizer.summarize_relations()
-
-            detector = CommunityDetector(graph=builder.graph, verbose=True)
-            detector.detect_and_summarize()
-        except Exception as e:
-            print(f"\n❌ Error en summaries: {e}")
-            sys.exit(1)
-    else:
-        if not paso_grafo(forzar=args.forzar_grafo):
-            sys.exit(1)
-
-    print("\n" + "=" * 60)
-    print("✅ PIPELINE COMPLETADO")
-    print("=" * 60)
-    print(f"   CSV          : {RUTA_CSV}")
-    print(f"   Ontología    : {RUTA_ONTOLOGIA}")
-    print(f"   Acrónimos    : {RUTA_ACRONIMOS}")
-    print(f"   Resultados   : {RUTA_RESULTADOS}")
-    print(f"   Neo4j        : http://localhost:7474")
+    safe_print("\n" + "=" * 60)
+    safe_print("🎉 PIPELINE COMPLETADO")
+    safe_print("=" * 60)
 
 
 if __name__ == "__main__":

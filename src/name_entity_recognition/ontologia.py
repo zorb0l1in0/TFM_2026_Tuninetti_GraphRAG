@@ -299,6 +299,20 @@ class CargadorOntologia:
                 entrada["range"] = datos["range"]
             result[nombre] = entrada
         return result
+    def descripcion_entidades_compacta(self) -> str:
+        lineas = []
+        for nombre, datos in self.ontologia.get("entities", {}).items():
+            patrones = ", ".join(datos.get("patterns", []))
+            lineas.append(f"- {nombre}: {patrones}")
+        return "\n".join(lineas)
+
+    def descripcion_relaciones_compacta(self) -> str:
+        lineas = []
+        for nombre, datos in self.ontologia.get("relations", {}).items():
+            domain = ", ".join(datos.get("domain", []))
+            rango  = ", ".join(datos.get("range",  []))
+            lineas.append(f"- {nombre}: [{domain}] → [{rango}]")
+        return "\n".join(lineas)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

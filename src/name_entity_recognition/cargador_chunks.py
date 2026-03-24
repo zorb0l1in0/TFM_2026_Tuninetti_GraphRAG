@@ -1,6 +1,12 @@
+import sys
 import pandas as pd
 from pathlib import Path
 from typing import Optional
+
+
+def _print(msg: str):
+    sys.stdout.write(msg + "\n")
+    sys.stdout.flush()
 
 
 class CargadorChunksCSV:
@@ -19,10 +25,10 @@ class CargadorChunksCSV:
         if not self.ruta.exists():
             raise FileNotFoundError(f"CSV no encontrado: {self.ruta}")
 
-        print(f"📂 Cargando CSV: {self.ruta.name}")
+        _print(f"📂 Cargando CSV: {self.ruta.name}")
         self.df = pd.read_csv(self.ruta)
-        print(f"✅ Filas totales: {len(self.df)}")
-        print(f"📋 Columnas: {', '.join(self.df.columns.tolist())}")
+        _print(f"✅ Filas totales: {len(self.df)}")
+        _print(f"📋 Columnas: {', '.join(self.df.columns.tolist())}")
 
     def cargar_chunks(
         self,
@@ -45,17 +51,17 @@ class CargadorChunksCSV:
             col = next((c for c in ['nombre_documento', 'titulo', 'title'] if c in df.columns), None)
             if col:
                 df = df[df[col].astype(str).str.contains(filtro_documento, case=False, na=False)]
-                print(f"🔍 Filtro documento '{filtro_documento}': {len(df)} filas")
+                _print(f"🔍 Filtro documento '{filtro_documento}': {len(df)} filas")
 
         if filtro_tipo:
             col = next((c for c in ['clase_documento', 'tipo_documento', 'type'] if c in df.columns), None)
             if col:
                 df = df[df[col].astype(str).str.contains(filtro_tipo, case=False, na=False)]
-                print(f"🔍 Filtro tipo '{filtro_tipo}': {len(df)} filas")
+                _print(f"🔍 Filtro tipo '{filtro_tipo}': {len(df)} filas")
 
         if max_chunks:
             df = df.head(max_chunks)
-            print(f"✂️  Limitado a {max_chunks} chunks")
+            _print(f"✂️  Limitado a {max_chunks} chunks")
 
         chunks = []
         for idx, fila in df.iterrows():
@@ -70,7 +76,7 @@ class CargadorChunksCSV:
                 "fuente":   self._obtener(fila, ['source_file', 'archivo_origen', 'file_name']) or "desconocido",
             })
 
-        print(f"✅ Chunks listos para NER: {len(chunks)}")
+        _print(f"✅ Chunks listos para NER: {len(chunks)}")
         return chunks
 
     def _obtener(self, fila, columnas: list[str]) -> str:
@@ -82,24 +88,24 @@ class CargadorChunksCSV:
 
     def resumen(self):
         """Muestra estadísticas básicas del CSV cargado."""
-        print("\n" + "=" * 40)
-        print("📊 RESUMEN CSV")
-        print("=" * 40)
-        print(f"Chunks totales: {len(self.df)}")
+        _print("\n" + "=" * 40)
+        _print("📊 RESUMEN CSV")
+        _print("=" * 40)
+        _print(f"Chunks totales: {len(self.df)}")
 
         for col_tipo in ['clase_documento', 'tipo_documento']:
             if col_tipo in self.df.columns:
-                print("\n📑 Tipos de documento:")
+                _print("\n📑 Tipos de documento:")
                 for tipo, count in self.df[col_tipo].value_counts().items():
-                    print(f"  • {tipo}: {count}")
+                    _print(f"  • {tipo}: {count}")
                 break
 
         for col_doc in ['nombre_documento', 'titulo']:
             if col_doc in self.df.columns:
-                print(f"\n📄 Documentos únicos: {self.df[col_doc].nunique()}")
+                _print(f"\n📄 Documentos únicos: {self.df[col_doc].nunique()}")
                 break
 
-        print("=" * 40)
+        _print("=" * 40)
 
 
 if __name__ == "__main__":

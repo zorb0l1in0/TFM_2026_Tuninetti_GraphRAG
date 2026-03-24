@@ -50,14 +50,10 @@ class IngestionPipeline:
 
     def __init__(
         self,
-        api_key: Optional[str] = os.getenv('OPENAI_API_KEY'),
-        modelo_embeddings: str = "text-embedding-3-small",
         max_caracteres_chunk: int = 1500,
         batch_size: int = 20,
     ):
         self.max_caracteres_chunk = max_caracteres_chunk
-        self._api_key             = api_key
-        self._modelo              = modelo_embeddings
         self._batch_size          = batch_size
 
         self.chunker  = ChunkerSeccionesMarkdown(max_caracteres=max_caracteres_chunk)
@@ -175,15 +171,9 @@ class IngestionPipeline:
     # ── Lazy embedder ─────────────────────────────────────────────────────────
 
     def _get_embedder(self) -> GeneradorEmbeddingsMarkdown:
-        if not self._api_key:
-            raise ValueError(
-                "api_key richiesta. Passa api_key nel costruttore "
-                "o usa solo_chunking() per lavorare senza API."
-            )
+
         if self._embedder is None:
             self._embedder = GeneradorEmbeddingsMarkdown(
-                api_key=self._api_key,
-                modelo=self._modelo,
                 batch_size=self._batch_size,
             )
         return self._embedder
@@ -202,11 +192,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-i", "--input",  required=True, help="Carpeta con archivos .md")
     p.add_argument("-o", "--output", required=True, help="CSV de salida")
-    p.add_argument("-k", "--api-key", default=None,
-                   help="Clave OpenAI (o variable OPENAI_API_KEY)")
-    p.add_argument("-m", "--modelo", default="text-embedding-3-small",
-                   choices=["text-embedding-3-small", "text-embedding-3-large",
-                            "text-embedding-ada-002"])
     p.add_argument("--batch-size",     type=int, default=20)
     p.add_argument("--max-caracteres", type=int, default=_DEFAULT_CHARS)
     p.add_argument("--max-chunks",     type=int, default=None,
@@ -226,7 +211,6 @@ def _pycharm_mode():
     print(f"\n  📂 Input  : {_DEFAULT_INPUT}")
     print(f"  📄 Output : {_DEFAULT_OUTPUT}")
     print(f"  📏 Chars  : {_DEFAULT_CHARS}")
-    print(f"  🔑 API Key: {os.getenv('OPENAI_API_KEY', 'No definida')[:10]}...")
     print()
     print("  [1] Pipeline completo (chunking + embeddings)")
     print("  [2] Solo chunking (sin API key)")
@@ -238,9 +222,7 @@ def _pycharm_mode():
                 "--output", _DEFAULT_OUTPUT]
 
     if modo == "1":
-        api = os.getenv("OPENAI_API_KEY", "")
-        if api:
-            sys.argv += ["--api-key", api]
+        pass
     elif modo == "2":
         sys.argv += ["--solo-chunking"]
     else:
@@ -253,11 +235,8 @@ def main():
         _pycharm_mode()
 
     args    = _build_parser().parse_args()
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
 
     pipeline = IngestionPipeline(
-        api_key=api_key,
-        modelo_embeddings=args.modelo,
         max_caracteres_chunk=args.max_caracteres,
         batch_size=args.batch_size,
     )

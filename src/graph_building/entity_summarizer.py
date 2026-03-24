@@ -27,16 +27,13 @@ import os
 import time
 from typing import Dict, List, Optional
 
-from openai import OpenAI
 from dotenv import load_dotenv
-from langchain_community.graphs import Neo4jGraph
+from ..common.clients import get_neo4j_graph
+from ..common.clients import get_langchain_llm
 
 from .entity_resolver import CanonicalEntity, EntityMap
 
 load_dotenv()
-
-# Modelo a usar para la summarización
-_MODEL = "gpt-4o"
 
 # Número máximo de descripciones a enviar al LLM en una sola llamada.
 # Si una entidad tiene más, se trunca (las más frecuentes primero).
@@ -54,7 +51,7 @@ class EntitySummarizer:
 
     def __init__(
         self,
-        graph: Neo4jGraph,
+        graph = None,
         verbose: bool = True,
         max_descriptions: int = _MAX_DESCRIPTIONS,
         sleep_between_calls: float = _SLEEP_BETWEEN_CALLS,
@@ -70,7 +67,8 @@ class EntitySummarizer:
         self.verbose              = verbose
         self.max_descriptions     = max_descriptions
         self.sleep_between_calls  = sleep_between_calls
-        self.client               = OpenAI()
+        self.client               = get_langchain_llm()
+
 
     # ── Punto de entrada ──────────────────────────────────────────────────────
 
@@ -145,12 +143,9 @@ class EntitySummarizer:
 
         prompt = self._build_prompt(ce, descripciones)
 
-        response = self.client.chat.completions.create(
-            model=_MODEL,
-            max_tokens=300,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content.strip()
+        response = self.client.invoke(prompt)
+        return response.content.strip()
+
 
     def _build_prompt(self, ce: CanonicalEntity, descripciones: List[str]) -> str:
         """
@@ -276,12 +271,8 @@ Responde SOLO con la descripción consolidada, sin preámbulo ni explicación.""
 
         prompt = self._build_relation_prompt(rel, fragmentos)
 
-        response = self.client.chat.completions.create(
-            model=_MODEL,
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content.strip()
+        response = self.client.invoke(prompt)
+        return response.content.strip()
 
     def _build_relation_prompt(self, rel: Dict, fragmentos: str) -> str:
         return f"""Eres un asistente especializado en normativa universitaria española.
@@ -321,11 +312,14 @@ if __name__ == "__main__":
     ruta_json = sys.argv[1] if len(sys.argv) > 1 else "ner_resultados.json"
 
     # Fase A: resolución de entidades
-    resolver   = EntityResolver(fuzzy_threshold=0.93, verbose=True)
+    resolver = EntityResolver(
+        embedding_threshold=0.92,   # ← sostituisce fuzzy_threshold=0.93
+        usar_embedding_merge=True,  # ← nuovo
+        verbose=True
+    )
     entity_map = resolver.resolve(ruta_json)
-    entity_map.print_stats()
+    entity_map.print_stats() # Construcción del grafo
 
-    # Construcción del grafo
     builder = GraphBuilder(
         verbose=True,
         solo_relaciones_validas=True,

@@ -27,16 +27,12 @@ Estructura esperada de ner_resultados.json:
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from dotenv import load_dotenv
-from langchain_community.graphs import Neo4jGraph
-
+from ..common.clients import get_neo4j_graph
 from .entity_resolver import EntityMap, EntityResolver
 
-load_dotenv()
 
 
 class GraphBuilder:
@@ -51,19 +47,15 @@ class GraphBuilder:
     y todas las variantes textuales del mismo referente quedan fusionadas.
     """
 
-    _TEXTOS_GENERICOS = {
-        "programa", "programas", "títulos", "título", "titulación",
-        "titulaciones", "reglamento", "centro", "centros", "universidad",
-        "propuestas", "propuesta", "estudios", "asignaturas", "asignatura",
-        "curso", "cursos", "títulos", "créditos",
-    }
+    # Lista de textos genéricos a filtrar (si filtrar_genericos=True)
+    _TEXTOS_GENERICOS = set()
 
     def __init__(
         self,
         verbose: bool = True,
         solo_relaciones_validas: bool = True,
         confianza_minima: str = "medium",
-        filtrar_genericos: bool = True,
+        filtrar_genericos: bool = False,
         min_longitud_texto: int = 5,
         entity_map: Optional[EntityMap] = None,  # ← NUEVO
     ):
@@ -80,25 +72,8 @@ class GraphBuilder:
         self.entity_map              = entity_map  # ← NUEVO
         self._confianza_orden        = {"high": 3, "medium": 2, "low": 1}
 
-        self.graph = self._conectar_neo4j()
+        self.graph = get_neo4j_graph()
 
-    # ── Conexión ──────────────────────────────────────────────────────────────
-
-    def _conectar_neo4j(self) -> Neo4jGraph:
-        uri      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
-        username = os.getenv("NEO4J_USERNAME",  "neo4j")
-        password = os.getenv("NEO4J_PASSWORD",  "")
-
-        if not password:
-            raise ValueError("NEO4J_PASSWORD no encontrada en .env")
-
-        try:
-            graph = Neo4jGraph(url=uri, username=username, password=password)
-            if self.verbose:
-                print(f"✅ Conectado a Neo4j: {uri}")
-            return graph
-        except Exception as e:
-            raise ConnectionError(f"Error conectando a Neo4j: {e}") from e
 
     # ── Punto de entrada ──────────────────────────────────────────────────────
 

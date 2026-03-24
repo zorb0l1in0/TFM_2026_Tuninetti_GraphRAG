@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para generar embeddings desde documentos Markdown usando OpenAI text-embedding-3-small
+Script para generar embeddings desde documentos Markdown usando un cliente centralizado de embeddings
 y guardarlos en formato CSV compatible con el CSVLoader proporcionado.
 
 Uso:
@@ -22,38 +22,20 @@ from datetime import datetime
 import time
 from dotenv import load_dotenv
 from src.ingestion import ChunkerSeccionesMarkdown
-
-try:
-    from openai import OpenAI
-
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    print("❌ OpenAI no instalado. Instala con: pip install openai")
+from ..common.clients import get_embeddings_client, EMBEDDING_MODEL
 
 
 class GeneradorEmbeddingsMarkdown:
     """
-    Generador de embeddings para documentos Markdown usando OpenAI text-embedding-3-small.
-    Modelo económico: $0.13 por 1M tokens (aproximadamente 800 páginas)
+    Generador de embeddings para documentos Markdown usando el cliente centralizado
     """
 
     def __init__(self,
-                 api_key: str,
-                 modelo: str = "text-embedding-3-small",
+                 modelo: str = EMBEDDING_MODEL,
                  batch_size: int = 20,
                  max_retries: int = 3,
                  delay_segundos: float = 0.5,
                  max_caracteres_chunk: int = 1500):  # 👈 NUEVO
-        """
-        Args:
-            api_key: Clave API de OpenAI
-            modelo: Modelo OpenAI (default: text-embedding-3-small)
-            batch_size: Tamaño del batch para procesamiento
-            max_retries: Número máximo de reintentos en caso de error
-            delay_segundos: Delay entre llamadas para respetar rate limits
-            max_caracteres_chunk: Máximo de caracteres por chunk (~500 tokens)
-        """
         self.modelo = modelo
         self.batch_size = batch_size
         self.max_retries = max_retries
@@ -65,12 +47,11 @@ class GeneradorEmbeddingsMarkdown:
             niveles_heading=[1, 2, 3]
         )
 
-        if not OPENAI_AVAILABLE:
-            raise ImportError("OpenAI no está instalado. Instala con: pip install openai")
 
         print(f"🚀 Inicializando generador de embeddings con modelo: {modelo}")
         print(f"📏 Chunker semántico con máximo de {max_caracteres_chunk} caracteres por chunk")
-        self.client = OpenAI(api_key=api_key)
+        self.client = get_embeddings_client()
+
 
         # Verificar que la API key funciona
         self._verificar_conexion()
@@ -84,9 +65,9 @@ class GeneradorEmbeddingsMarkdown:
                 input="test",
                 encoding_format="float"
             )
-            print("✅ Conexión con OpenAI establecida correctamente")
+            print("✅ Conexión con el cliente de embeddings establecida correctamente")
         except Exception as e:
-            print(f"❌ Error al conectar con OpenAI: {e}")
+            print(f"❌ Error al conectar con el cliente de embeddings: {e}")
             raise
 
     def procesar_carpeta(self,
@@ -135,7 +116,7 @@ class GeneradorEmbeddingsMarkdown:
         print(f"📄 Total chunks generados: {len(todos_chunks)}")
 
         # Generar embeddings por lotes
-        print("🔢 Generando embeddings con OpenAI...")
+        print("🔢 Generando embeddings con el cliente centralizado...")
         df = self._generar_embeddings_dataframe(todos_chunks)
 
         # Guardar CSV
@@ -209,7 +190,7 @@ class GeneradorEmbeddingsMarkdown:
 
     def _generar_embeddings_dataframe(self, chunks: List[Dict]) -> pd.DataFrame:
         """
-        Genera embeddings para todos los chunks usando la API de OpenAI.
+        Genera embeddings para todos los chunks usando el cliente de embeddings.
         """
         # Extraer solo los textos
         textos = [chunk["texto"] for chunk in chunks]
@@ -308,7 +289,7 @@ class GeneradorEmbeddingsMarkdown:
 def configurar_parser():
     """Configura el parser de argumentos"""
     parser = argparse.ArgumentParser(
-        description="Genera embeddings desde archivos Markdown usando OpenAI text-embedding-3-small"
+        description="Genera embeddings desde archivos Markdown usando el cliente centralizado de embeddings"
     )
 
     parser.add_argument(
@@ -324,15 +305,10 @@ def configurar_parser():
     )
 
     parser.add_argument(
-        "-k", "--api-key",
-        help="Clave API de OpenAI (también puede usarse variable OPENAI_API_KEY)"
-    )
-
-    parser.add_argument(
         "-m", "--modelo",
-        default="text-embedding-3-small",
-        choices=["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
-        help="Modelo de embeddings OpenAI (default: text-embedding-3-small)"
+        default=EMBEDDING_MODEL,
+        choices=[EMBEDDING_MODEL],
+        help=f"Modelo de embeddings (default: {EMBEDDING_MODEL})"
     )
 
     parser.add_argument(
@@ -364,16 +340,9 @@ def main():
     parser = configurar_parser()
     args = parser.parse_args()
 
-    # Obtener API key de argumentos o variable de entorno
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("❌ Se requiere API key. Usa --api-key o variable OPENAI_API_KEY")
-        return
-
     # Crear generador
     try:
         generador = GeneradorEmbeddingsMarkdown(
-            api_key=api_key,
             modelo=args.modelo,
             batch_size=args.batch_size,
             max_caracteres_chunk=args.max_caracteres
@@ -418,7 +387,6 @@ if __name__ == "__main__":
         print("Usando configuración por defecto:\n")
         print(f"  📂 Entrada: {RUTA_ENTRADA_POR_DEFECTO}")
         print(f"  📄 Salida:  {RUTA_SALIDA_POR_DEFECTO}")
-        print(f"  🔑 API Key: {os.getenv('OPENAI_API_KEY', 'No definida')[:10]}...")
         print(f"  📏 Max caracteres: 2000 (~500 tokens)")
         print()
 
@@ -434,10 +402,6 @@ if __name__ == "__main__":
             "--input", RUTA_ENTRADA_POR_DEFECTO,
             "--output", RUTA_SALIDA_POR_DEFECTO,
         ]
-
-        # Añadir API key si está en entorno
-        if os.getenv("OPENAI_API_KEY"):
-            sys.argv.extend(["--api-key", os.getenv("OPENAI_API_KEY")])
 
     # Ejecutar función principal
     main()
