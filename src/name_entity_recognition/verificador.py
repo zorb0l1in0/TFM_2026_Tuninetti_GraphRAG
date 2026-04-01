@@ -3,6 +3,13 @@ verificador.py
 --------------
 Verifica post-hoc che le relazioni rispettino i vincoli domain/range
 dell'ontologia (Chepurova et al., TextGraphs 2024).
+
+Modifiche rispetto alla versione originale:
+  - Aggiunta modalità SOFT (solo_existencia=True):
+    valida solo che il nome della relazione esista nell'ontologia,
+    senza controllare domain/range. Riduce i falsi negativi strutturali
+    lasciando la correzione semantica alla fase EDC (relation_canonicalizer.py).
+  - La modalità STRICT (default) mantiene il comportamento originale.
 """
 
 from .ontologia import CargadorOntologia
@@ -13,11 +20,25 @@ class VerificadorRestricciones:
     """
     Verifica post-hoc que las relaciones respeten las restricciones domain/range
     de la ontología.
+
+    Args:
+        ontologia:       CargadorOntologia con il YAML caricato
+        mapa_entidades:  dict {texto_span: entity_type}
+        solo_existencia: se True, valida solo che il nome della relazione
+                         esista nell'ontologia (modalità SOFT).
+                         se False (default), valida anche domain e range
+                         (modalità STRICT).
     """
 
-    def __init__(self, ontologia: CargadorOntologia, mapa_entidades: dict[str, str]):
-        self.restricciones  = ontologia.restricciones_relaciones()
-        self.mapa_entidades = mapa_entidades
+    def __init__(
+        self,
+        ontologia:       CargadorOntologia,
+        mapa_entidades:  dict[str, str],
+        solo_existencia: bool = False,
+    ):
+        self.restricciones   = ontologia.restricciones_relaciones()
+        self.mapa_entidades  = mapa_entidades
+        self.solo_existencia = solo_existencia
 
     def verificar(self, relaciones: list[RelacionItem]) -> list[dict]:
         """
@@ -31,8 +52,15 @@ class VerificadorRestricciones:
             motivo = ""
 
             if restriccion is None:
+                # Relazione non definita nell'ontologia
                 motivo = f"Relación '{rel.relacion}' no definida en la ontología"
+
+            elif self.solo_existencia:
+                # Modalità SOFT: basta che il nome esista
+                valida = True
+
             else:
+                # Modalità STRICT: verifica anche domain e range
                 tipo_sujeto = self.mapa_entidades.get(rel.sujeto, "")
                 tipo_objeto = self.mapa_entidades.get(rel.objeto, "")
 
