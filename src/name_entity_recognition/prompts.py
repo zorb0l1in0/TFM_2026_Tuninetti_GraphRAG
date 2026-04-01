@@ -288,6 +288,7 @@ Para cada span proporcionado:
 
 PASO B — Extracción de relaciones:
 - Usa EXCLUSIVAMENTE los textos exactos de los spans como "sujeto" y "objeto".
+- PROHIBIDO usar como sujeto u objeto cualquier texto que no aparezca en la lista de spans proporcionada.
 - Solo extrae relaciones definidas en la ontología y justificadas por el texto.
 - NO generes relaciones cuyo dominio/rango contradigan las restricciones.
 - Si una entidad no tiene relación válida, no generes ninguna para ella.

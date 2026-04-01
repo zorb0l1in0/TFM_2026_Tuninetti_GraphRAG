@@ -6,6 +6,7 @@ Pipeline NER de dos pasos con verificación ontológica.
   Paso 1  — Detección de spans   (sin tipo)
   Paso 2  — Clasificación        (guiada por ontología)
   Paso 2b — Verificación         (comprobación de restricciones)
+  Paso 2b — Verificación         (comprobación de restricciones)
 
 La ontología SOLO puede proporcionarse mediante:
   A) YAML existente → PipelineNERDosPasos(ruta_ontologia="ontology.yaml")
@@ -165,7 +166,11 @@ class PipelineNERDosPasos:
             for r in relaciones_raw
         ]
 
-        verificador = VerificadorRestricciones(self.ontologia, mapa_entidades)
+        verificador = VerificadorRestricciones(
+            self.ontologia,
+            mapa_entidades,
+            solo_existencia=False,
+        )
         relaciones = verificador.verificar(items_relacion)
 
         validas = sum(1 for r in relaciones if r.get("valida"))
@@ -177,6 +182,12 @@ class PipelineNERDosPasos:
     # ----------------------------------------------------------
     def ejecutar(self, texto: str) -> dict:
         spans = self.ejecutar_paso1(texto)
+
+        # Normaliza: il LLM a volte restituisce ["testo"] invece di [{"text": "testo"}]
+        spans = [
+            s if isinstance(s, dict) else {"text": s}
+            for s in (spans or [])
+        ]
 
         if not spans:
             print("  ⚠ Sin spans — chunk omitido.", flush=True)

@@ -22,7 +22,7 @@ from datetime import datetime
 import time
 from dotenv import load_dotenv
 from src.ingestion import ChunkerSeccionesMarkdown
-from ..common.clients import get_embeddings_client, EMBEDDING_MODEL
+from src.common.clients import get_embeddings_client, EMBEDDING_MODEL
 
 
 class GeneradorEmbeddingsMarkdown:
@@ -376,8 +376,9 @@ if __name__ == "__main__":
     print("🚀 GENERADOR DE EMBEDDINGS PARA DOCUMENTOS MARKDOWN")
     print("=" * 60)
     # Configuración para ejecución directa desde PyCharm
-    RUTA_ENTRADA_POR_DEFECTO = "../../data/raw"
-    RUTA_SALIDA_POR_DEFECTO = "../../data/processed/chunks/chunks_con_embeddings.csv"
+    _ROOT = Path(__file__).resolve().parent.parent.parent
+    RUTA_ENTRADA_POR_DEFECTO = str(_ROOT / "data" / "raw")
+    RUTA_SALIDA_POR_DEFECTO = str(_ROOT / "data" / "processed" / "chunks" / "chunks_con_embeddings.csv")
 
     # Verificar si se está ejecutando desde PyCharm sin argumentos
     import sys

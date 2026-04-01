@@ -161,29 +161,39 @@ class CommunityDetector:
             print("   Estado previo limpiado")
 
     def _proyectar_gds(self) -> Tuple[int, int]:
-        """
-        Proyecta nodos Entidad y relaciones semánticas en GDS (UNDIRECTED).
-        Excluye MENTIONED_IN y BELONGS_TO que son arcos estructurales.
-        """
+        # Prima legge i tipi di relazione semantici presenti nel grafo
+        rel_types = self.graph.query(
+            """
+            MATCH (:Entidad)-[r]->(:Entidad)
+            WHERE type(r) <> 'MENTIONED_IN' AND type(r) <> 'BELONGS_TO'
+            RETURN DISTINCT type(r) AS rel_type
+            """
+        )
+
+        if not rel_types:
+            raise RuntimeError("No hay relaciones entre entidades para proyectar.")
+
+        tipos = [row["rel_type"] for row in rel_types]
+
+        # Costruisce la mappa dei tipi per GDS
+        rel_map = "{" + ", ".join(
+            f"{t}: {{ orientation: 'UNDIRECTED', properties: {{}} }}"
+            for t in tipos
+        ) + "}"
+
         result = self.graph.query(
             f"""
             CALL gds.graph.project(
                 '{self.gds_graph_name}',
                 'Entidad',
-                {{
-                    __ALL_RELATIONSHIPS__: {{
-                        orientation: 'UNDIRECTED',
-                        properties: {{}}
-                    }}
-                }}
+                {rel_map}
             )
             YIELD nodeCount, relationshipCount
             RETURN nodeCount, relationshipCount
             """
         )
         if not result:
-            raise RuntimeError("GDS no devolvió resultado. "
-                               "¿Está instalado neo4j-graph-data-science?")
+            raise RuntimeError("GDS no devolvió resultado.")
         row = result[0]
         return row["nodeCount"], row["relationshipCount"]
 
@@ -421,7 +431,7 @@ if __name__ == "__main__":
     ruta_json = sys.argv[1] if len(sys.argv) > 1 else "ner_resultados.json"
 
     # Fase A: resolución de entidades
-    resolver   = EntityResolver(fuzzy_threshold=0.93, verbose=True)
+    resolver   = EntityResolver(embedding_threshold=0.92, verbose=True)
     entity_map = resolver.resolve(ruta_json)
 
     # Construcción del grafo

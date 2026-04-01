@@ -69,7 +69,7 @@ class CargadorChunksCSV:
             if not texto:
                 continue
             chunks.append({
-                "chunk_id": self._obtener(fila, ['id', 'chunk_id', 'chunk_index']) or f"chunk_{idx:04d}",
+                "chunk_id": self._obtener(fila, ['id_chunk', 'id', 'chunk_id', 'chunk_index']) or f"chunk_{idx:04d}",
                 "texto":    texto,
                 "titulo":   self._obtener(fila, ['nombre_documento', 'titulo', 'title']) or "Sin título",
                 "tipo":     self._obtener(fila, ['clase_documento', 'tipo_documento', 'type']) or "Desconocido",

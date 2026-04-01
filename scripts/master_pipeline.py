@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # -------------------------------
 # Rutas del proyecto
 # -------------------------------
-RUTA_RAW        = Path("../data/raw")
+RUTA_RAW        = Path(__file__).parent.parent / "data" / "raw"
 RUTA_CSV        = Path("../data/processed/chunks/chunks_con_embeddings.csv")
 RUTA_ONTOLOGIA  = Path("../data/ner/ontologia/ontology.yaml")
 RUTA_BORRADOR   = Path("../data/ner/ontologia/borrador_ontologia.json")
@@ -315,6 +315,7 @@ def paso_ner(forzar: bool = False, max_chunks: int = None, workers: int = 1) -> 
 # ============================================================================
 # STEP 4 — NEO4J
 # ============================================================================
+
 def paso_grafo(forzar: bool = False) -> bool:
     safe_print("\n" + "=" * 60)
     safe_print("🕸️  STEP 4: GRAFO NEO4J")
@@ -329,14 +330,26 @@ def paso_grafo(forzar: bool = False) -> bool:
         from src.graph_building.graph_builder import GraphBuilder
         from src.graph_building.entity_summarizer import EntitySummarizer
         from src.communities.community_detector import CommunityDetector
+        from src.name_entity_recognition.relation_canonicalizer import canonicalizar_post_ner
+
+        # ── Fase EDC: canonicalizzazione relazioni non-ontologiche ────────
+        safe_print("\n🔗 EDC — Canonicalizzazione relazioni...")
+        n_mappate, n_grigia, n_scartate = canonicalizar_post_ner(
+            ruta_ner_json  = str(RUTA_RESULTADOS),
+            ruta_ontologia = str(RUTA_ONTOLOGIA),
+            soglia         = 0.75,
+            soglia_grigia  = 0.60,
+            verbose        = True,
+        )
+        safe_print(f"   Mappate: {n_mappate} | Zona grigia: {n_grigia} | Scartate: {n_scartate}")
+        # ────────────────────────────────────────────────────────────────
 
         resolver = EntityResolver(
-            embedding_threshold=0.92,  # ← sostituisce fuzzy_threshold
-            usar_embedding_merge=True,  # ← nuovo
+            embedding_threshold=0.92,
+            usar_embedding_merge=True,
             ruta_acronimos=RUTA_ACRONIMOS,
             verbose=True
         )
-
         entity_map = resolver.resolve(str(RUTA_RESULTADOS))
 
         builder = GraphBuilder(

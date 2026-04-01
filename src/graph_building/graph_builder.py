@@ -253,22 +253,22 @@ class GraphBuilder:
         except Exception:
             pass
 
+
+
+
+
     def _merge_relacion(self, rel: Dict) -> bool:
-        """
-        Crea el arco entre dos nodos Entidad.
-
-        CON entity_map:
-          - resuelve sujeto y objeto a su canonical_id
-          - el MATCH usa el id (único, sin ambigüedad)
-
-        SIN entity_map (fallback):
-          - busca por toLower(text), comportamiento original
-        """
-        sujeto   = rel.get("sujeto",   "").strip()
-        objeto   = rel.get("objeto",   "").strip()
+        sujeto = rel.get("sujeto", "").strip()
+        objeto = rel.get("objeto", "").strip()
         relacion = rel.get("relacion", "").strip().upper().replace(" ", "_")
 
         if not sujeto or not objeto or not relacion:
+            return False
+
+        # Elimina auto-loop por texto idéntico
+        if sujeto.lower() == objeto.lower():
+            if self.verbose:
+                print(f"     ⚠️ Auto-loop eliminado: '{sujeto}' --[{relacion}]--> '{objeto}'")
             return False
 
         # ── Resolución canónica ───────────────────────────────────────────────
@@ -277,10 +277,15 @@ class GraphBuilder:
             tgt_id = self.entity_map.canonical_id(objeto)
 
             if not src_id or not tgt_id:
-                # Uno de los dos extremos no está en el mapa: relación no creable
                 if self.verbose:
                     print(f"     ⚠️ Relación '{relacion}': extremo no resuelto "
                           f"('{sujeto}' → '{objeto}')")
+                return False
+
+            # Elimina auto-loop post-canonicalizzazione
+            if src_id == tgt_id:
+                if self.verbose:
+                    print(f"     ⚠️ Auto-loop canónico eliminado: '{sujeto}' --[{relacion}]--> '{objeto}'")
                 return False
 
             try:
@@ -316,6 +321,9 @@ class GraphBuilder:
             if self.verbose:
                 print(f"     ⚠️ Relación '{relacion}': {e}")
             return False
+
+
+
 
     # ── Filtro y deduplicación ────────────────────────────────────────────────
 
@@ -393,7 +401,7 @@ if __name__ == "__main__":
     ruta_json = sys.argv[1] if len(sys.argv) > 1 else "ner_resultados.json"
 
     # 1. Construye el EntityMap (Fase A del pipeline GraphRAG)
-    resolver   = EntityResolver(fuzzy_threshold=0.93, verbose=True)
+    resolver   = EntityResolver(embedding_threshold=0.92, verbose=True)
     entity_map = resolver.resolve(ruta_json)
     entity_map.print_stats()
 

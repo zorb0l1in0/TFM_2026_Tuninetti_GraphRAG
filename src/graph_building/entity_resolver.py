@@ -38,6 +38,21 @@ from typing import Dict, List, Optional, Set, Tuple
 import yaml
 
 
+# --- Normalizzazione singolare/plurale --------------------------------------
+def normalize_plural(text: str) -> str:
+    """
+    Normalizza forme singolare/plurale per ridurre duplicati:
+    estudiantes -> estudiante
+    procedimientos -> procedimiento
+    asignaturas -> asignatura
+    módulos -> módulo
+    materias -> materia
+    Regola semplice e sicura: rimuove UNA sola 's' finale se applicabile.
+    """
+    if len(text) > 3 and text.endswith("s"):
+        return text[:-1]
+    return text
+
 # ── Tipos excluidos del embedding merge ───────────────────────────────────────
 # Convocatoria: 'ordinaria' ≠ 'extraordinaria' aunque sean semánticamente cercanas
 # Plaza: 'plazas vacantes' ≠ 'plazas ofertadas'
@@ -286,6 +301,7 @@ class EntityResolver:
 
     # ── Punto de entrada ──────────────────────────────────────────────────────
 
+
     def resolve(self, ner_json_path: str) -> EntityMap:
         """
         Lee el JSON NER y construye el EntityMap completo.
@@ -361,14 +377,18 @@ class EntityResolver:
         """
         groups: Dict[Tuple[str, str], List[EntityInstance]] = defaultdict(list)
         for inst in instances:
-            key = (inst.entity_type, inst.text.lower())
+            normalized = normalize_plural(inst.text.lower())
+            key = (inst.entity_type, normalized)
+
             groups[key].append(inst)
 
         entity_map = EntityMap()
 
         for (etype, text_lower), insts in groups.items():
             variant_counter = Counter(i.text for i in insts)
-            canonical_text  = variant_counter.most_common(1)[0][0]
+
+            canonical_text = normalize_plural(variant_counter.most_common(1)[0][0])
+
             canonical_id    = _make_id(etype, canonical_text)
 
             existing = entity_map._by_id.get(canonical_id)
@@ -422,24 +442,6 @@ class EntityResolver:
     # ── Fase 3: embedding merge (OPTIMIZADO) ──────────────────────────────────
 
     def _embedding_merge(self, entity_map: EntityMap, ruta_cache: Path) -> int:
-        """
-        Fusiona entidades del mismo tipo cuya similitud coseno supera el umbral.
-
-        Optimizaciones respecto al original:
-
-        A) BATCH ÚNICO — recoge TODOS los textos candidatos de todos los tipos
-           y hace UNA sola llamada a la API (o cero si todo está en caché).
-           El original hacía una llamada por tipo.
-
-        B) CACHÉ EN DISCO — los embeddings se persisten entre ejecuciones.
-           Solo los textos nuevos se re-embedan.
-
-        C) BUCLE TRIANGULAR — j empieza desde i+1, cada par se examina
-           una sola vez. El original examinaba cada par dos veces.
-
-        D) FILTRO ANTICIPADO — los textos con dígitos o números romanos
-           se excluyen antes de pedir embeddings, reduciendo el payload.
-        """
         try:
             import numpy as np
         except ImportError:
@@ -447,84 +449,70 @@ class EntityResolver:
                 print("  ⚠ numpy no disponible, embedding merge omitido")
             return 0
 
-        # ── Recopilación de candidatos por tipo (con filtro anticipado) ───────
-        # Excluimos tipos peligrosos y textos con dígitos/romanos ANTES
-        # de construir el payload de la API, no solo antes de comparar.
-        by_type: Dict[str, List[CanonicalEntity]] = defaultdict(list)
+        # --- 1. Candidati (cross-type consentito) -------------------------------
+        candidatos = []
         for ce in entity_map.all_canonicals():
+            t = ce.canonical_text
             if ce.entity_type in _TIPOS_NO_EMBEDDING:
                 continue
-            t = ce.canonical_text
             if _RE_DIGITS.search(t) or _RE_ROMAN.search(t):
                 continue
-            by_type[ce.entity_type].append(ce)
+            candidatos.append(ce)
 
-        # Solo tipos con al menos 2 candidatos (si no, no hay nada que comparar)
-        by_type = {k: v for k, v in by_type.items() if len(v) >= 2}
-
-        if not by_type:
+        if len(candidatos) < 2:
             if self.verbose:
-                print("  ℹ️  Ningún tipo con ≥2 candidatos, embedding merge omitido")
+                print("  ℹ️  Muy pocos candidatos, embedding merge omitido")
             return 0
 
-        # ── Batch único: todos los textos únicos a embeddar ───────────────────
-        todos_los_textos: List[str] = list({
-            ce.canonical_text
-            for candidatos in by_type.values()
-            for ce in candidatos
-        })
-
         if self.verbose:
-            total_candidatos = sum(len(v) for v in by_type.values())
-            print(f"\n  📐 Embedding merge — {total_candidatos} candidatos, "
-                  f"{len(todos_los_textos)} textos únicos, {len(by_type)} tipos")
+            print(f"\n  📐 Embedding merge — {len(candidatos)} candidatos")
 
-        # UNA llamada a la API (o cero si todo está en caché)
+        # --- 2. Batch unico per embeddings -------------------------------------
+        textos = [ce.canonical_text for ce in candidatos]
+        textos_unicos = list(set(textos))
+
         cache = CacheEmbeddings(ruta_cache, verbose=self.verbose)
-        texto_a_vec = cache.obtener_o_calcular(todos_los_textos)
+        texto_a_vec = cache.obtener_o_calcular(textos_unicos)
         cache.guardar()
 
-        # ── Comparación por tipo con bucle triangular ─────────────────────────
-        fusiones    = 0
-        merged_ids: Set[str] = set()
+        # --- 3. Costruzione matrice embedding -----------------------------------
+        vecs = np.array([texto_a_vec[t] for t in textos], dtype=np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        mat_norm = vecs / (norms + 1e-9)
 
-        for etype, candidatos in by_type.items():
-            # Ordena por frecuencia desc: el más frecuente es el destino de la fusión
-            candidatos.sort(key=lambda c: -len(c.instances))
-            n = len(candidatos)
+        # --- 4. Bucle triangolare (cross-type merge) -----------------------------
+        fusiones = 0
+        merged_ids = set()
+        n = len(candidatos)
 
-            # Matriz normalizada para el tipo actual
-            mat = np.array(
-                [texto_a_vec[ce.canonical_text] for ce in candidatos],
-                dtype=np.float32
-            )
-            norms    = np.linalg.norm(mat, axis=1, keepdims=True)
-            mat_norm = mat / (norms + 1e-9)
+        for i in range(n):
+            ce_a = candidatos[i]
+            if ce_a.canonical_id in merged_ids:
+                continue
 
-            for i in range(n):
-                ce_a = candidatos[i]
-                if ce_a.canonical_id in merged_ids:
+            for j in range(i + 1, n):
+                ce_b = candidatos[j]
+                if ce_b.canonical_id in merged_ids:
                     continue
 
-                # ▼ BUCLE TRIANGULAR: j empieza desde i+1 ▼
-                for j in range(i + 1, n):
-                    ce_b = candidatos[j]
-                    if ce_b.canonical_id in merged_ids:
-                        continue
-                    if ce_a.canonical_id == ce_b.canonical_id:
-                        continue
+                sim = float(np.dot(mat_norm[i], mat_norm[j]))
 
-                    sim = float(np.dot(mat_norm[i], mat_norm[j]))
+                # threshold dinamico
+                umbral = (
+                    self.embedding_threshold
+                    if ce_a.entity_type == ce_b.entity_type
+                    else 0.86
+                )
 
-                    if sim >= self.embedding_threshold:
-                        if self.verbose:
-                            print(f"  🔗 Embedding merge [{etype}] sim={sim:.3f}")
-                            print(f"     '{ce_a.canonical_text}'")
-                            print(f"     ← '{ce_b.canonical_text}'")
-                        # ce_b (menos frecuente, j > i) se fusiona en ce_a
-                        self._merge_into(ce_b, ce_a, entity_map)
-                        merged_ids.add(ce_b.canonical_id)
-                        fusiones += 1
+                if sim >= umbral:
+                    if self.verbose:
+                        print(f"  🔗 Embedding merge sim={sim:.3f}")
+                        print(f"     '{ce_a.canonical_text}'")
+                        print(f"     ← '{ce_b.canonical_text}'")
+
+                    self._merge_into(ce_b, ce_a, entity_map)
+                    merged_ids.add(ce_b.canonical_id)
+                    fusiones += 1
 
         return fusiones
 
