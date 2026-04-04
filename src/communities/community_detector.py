@@ -61,6 +61,7 @@ class CommunityDetector:
         max_nodos_en_prompt: int = _MAX_NODOS_EN_PROMPT,
         gds_graph_name: str = _GDS_GRAPH_NAME,
         max_levels: int = _MAX_LEVELS,
+        gamma: float = 1.0,
     ):
         """
         Args:
@@ -80,6 +81,7 @@ class CommunityDetector:
         self.gds_graph_name      = gds_graph_name
         self.max_levels          = max_levels
         self.client              = get_langchain_llm()
+        self.gamma               = gamma
 
     # ── Punto de entrada ──────────────────────────────────────────────────────
 
@@ -210,7 +212,7 @@ class CommunityDetector:
                 {{
                     writeProperty:                  'communityIds',
                     randomSeed:                     42,
-                    gamma:                          1.0,
+                    gamma:                          {self.gamma},
                     theta:                          0.01,
                     maxLevels:                      {self.max_levels},
                     tolerance:                      0.0001,
@@ -298,50 +300,59 @@ class CommunityDetector:
         return response.content.strip()
 
     def _build_community_prompt(
-        self,
-        miembros: List[Dict],
-        total_miembros: int,
-        level: int = 0,
+            self,
+            miembros: List[Dict],
+            total_miembros: int,
+            level: int = 0,
     ) -> str:
-        """
-        Construye el prompt adaptado al nivel:
-          - Nivel 0 (fino):   pide detalle específico del proceso
-          - Nivel 1 (medio):  pide síntesis de varios procesos relacionados
-          - Nivel 2+ (grueso): pide descripción del dominio temático macro
-        """
         lineas = []
         for m in miembros:
-            desc  = m.get("descripcion", "").strip()
+            desc = m.get("descripcion", "").strip()
             linea = f"- [{m['entity_type']}] \"{m['text']}\""
             if desc:
                 linea += f": {desc}"
             lineas.append(linea)
 
         lista_miembros = "\n".join(lineas)
-        nota_truncado  = (f"\n(Mostrando {len(miembros)} de {total_miembros} entidades)"
-                          if total_miembros > len(miembros) else "")
+        nota_truncado = (f"\n(Mostrando {len(miembros)} de {total_miembros} entidades)"
+                         if total_miembros > len(miembros) else "")
 
         if level == 0:
-            instruccion = ("Genera un resumen específico (máximo 3 frases) que describa "
-                           "el proceso o concepto concreto que une estas entidades.")
+            instruccion = """\
+    Genera un resumen DENSO EN HECHOS (máximo 5 frases) que incluya OBLIGATORIAMENTE:
+    - Los nombres exactos de los órganos, documentos y procedimientos involucrados
+    - Los números, plazos, porcentajes o umbrales que aparezcan (ej: "30 créditos", "1 mes", "75%")
+    - Las relaciones clave entre entidades (quién aprueba qué, quién resuelve qué, qué habilita a quién)
+    - El artículo o disposición normativa de referencia si está disponible
+    NO uses frases genéricas como "puede implicar" o "establece procedimientos".
+    USA nombres propios y datos concretos."""
+
         elif level == 1:
-            instruccion = ("Genera una síntesis (máximo 4 frases) que describa el área "
-                           "temática que agrupa estos procesos y conceptos relacionados.")
+            instruccion = """\
+    Genera una síntesis DENSA EN HECHOS (máximo 5 frases) que incluya:
+    - Los nombres exactos de los órganos y documentos normativos del área
+    - Los procedimientos principales con sus requisitos numéricos específicos
+    - Las relaciones jerárquicas entre órganos (quién aprueba, quién habilita, quién resuelve)
+    NO uses frases genéricas. Menciona siempre entidades concretas y cifras."""
+
         else:
-            instruccion = ("Genera una descripción macro (máximo 4 frases) del dominio "
-                           "normativo o administrativo que engloba todos estos elementos.")
+            instruccion = """\
+    Genera una descripción (máximo 6 frases) del dominio normativo que incluya:
+    - Los reglamentos y resoluciones principales por nombre exacto
+    - Los órganos institucionales clave y sus competencias específicas
+    - Los procedimientos macro y sus condiciones de activación
+    Menciona siempre entidades concretas, nunca descrizioni vaghe."""
 
         return f"""Eres un asistente especializado en normativa universitaria española.
-Se te presenta un clúster de entidades (nivel {level}) extraídas de los reglamentos
-de la Universidad de La Laguna.
+    Se te presenta un clúster de entidades extraídas de los reglamentos de la Universidad de La Laguna.
+    Tu tarea es generar un resumen que sirva para RESPONDER PREGUNTAS CONCRETAS sobre normativa.
 
-Entidades del clúster:{nota_truncado}
-{lista_miembros}
+    Entidades del clúster (nivel {level}):{nota_truncado}
+    {lista_miembros}
 
-{instruccion}
-El resumen debe ser útil para responder consultas sobre normativa universitaria.
-Responde SOLO con el resumen, en español, sin preámbulo."""
+    {instruccion}
 
+    Responde SOLO con el resumen, en español, sin preámbulo ni conclusión."""
     # ── Guardado en Neo4j ─────────────────────────────────────────────────────
 
     def _guardar_community_node(

@@ -29,13 +29,13 @@ if hasattr(sys.stdout, "reconfigure"):
 # -------------------------------
 # Rutas del proyecto
 # -------------------------------
-RUTA_RAW        = Path(__file__).parent.parent / "data" / "raw"
-RUTA_CSV        = Path("../data/processed/chunks/chunks_con_embeddings.csv")
-RUTA_ONTOLOGIA  = Path("../data/ner/ontologia/ontology.yaml")
-RUTA_BORRADOR   = Path("../data/ner/ontologia/borrador_ontologia.json")
-RUTA_RESULTADOS = Path("../data/ner/ner_resultados.json")
-RUTA_ACRONIMOS  = Path("../data/acronimos.yaml")
-
+_ROOT           = Path(__file__).resolve().parent.parent
+RUTA_RAW        = _ROOT / "data" / "raw"
+RUTA_CSV        = _ROOT / "data" / "processed" / "chunks" / "chunks_con_embeddings.csv"
+RUTA_ONTOLOGIA  = _ROOT / "data" / "ner" / "ontologia" / "ontology.yaml"
+RUTA_BORRADOR   = _ROOT / "data" / "ner" / "ontologia" / "borrador_ontologia.json"
+RUTA_RESULTADOS = _ROOT / "data" / "ner" / "ner_resultados.json"
+RUTA_ACRONIMOS  = _ROOT / "data" / "acronimos.yaml"
 _print_lock = threading.Lock()
 
 def safe_print(*args, **kwargs):
@@ -49,7 +49,7 @@ def safe_print(*args, **kwargs):
 
 # ============================================================================
 # KEEPALIVE — evita que el servidor descargue el modelo por inactividad
-# ============================================================================
+# ============================================A<================================
 def _keepalive_loop(stop_event: threading.Event):
     """Manda una petición mínima cada 30s para mantener el modelo cargado."""
     from openai import OpenAI
@@ -204,6 +204,7 @@ def paso_ner(forzar: bool = False, max_chunks: int = None, workers: int = 1) -> 
     try:
         from src.name_entity_recognition.cargador_chunks import CargadorChunksCSV
         from src.name_entity_recognition.pipeline import PipelineNERDosPasos
+        from src.name_entity_recognition.relation_canonicalizer import canonicalizar_post_ner
 
         cargador = CargadorChunksCSV(str(RUTA_CSV))
         cargador.resumen()
@@ -303,8 +304,20 @@ def paso_ner(forzar: bool = False, max_chunks: int = None, workers: int = 1) -> 
         )
 
         safe_print("\n" + "=" * 60)
+        # DOPO:
         safe_print(f"✅ NER completado — {len(todos)} chunks procesados, {len(errores)} errores")
         safe_print("=" * 60)
+
+        # EDC: canonicalizza i nomi non in ontologia prima della revisione manuale D/R
+        safe_print("\n🔗 EDC — Canonicalizzazione relazioni non-ontologiche...")
+        n_mappate, n_grigia, n_scartate = canonicalizar_post_ner(
+            ruta_ner_json=str(RUTA_RESULTADOS),
+            ruta_ontologia=str(RUTA_ONTOLOGIA),
+            soglia=0.75,
+            soglia_grigia=0.60,
+            verbose=True,
+        )
+        safe_print(f"   Mappate: {n_mappate} | Zona grigia: {n_grigia} | Scartate: {n_scartate}")
         return True
 
     except Exception as e:
@@ -332,18 +345,6 @@ def paso_grafo(forzar: bool = False) -> bool:
         from src.communities.community_detector import CommunityDetector
         from src.name_entity_recognition.relation_canonicalizer import canonicalizar_post_ner
 
-        # ── Fase EDC: canonicalizzazione relazioni non-ontologiche ────────
-        safe_print("\n🔗 EDC — Canonicalizzazione relazioni...")
-        n_mappate, n_grigia, n_scartate = canonicalizar_post_ner(
-            ruta_ner_json  = str(RUTA_RESULTADOS),
-            ruta_ontologia = str(RUTA_ONTOLOGIA),
-            soglia         = 0.75,
-            soglia_grigia  = 0.60,
-            verbose        = True,
-        )
-        safe_print(f"   Mappate: {n_mappate} | Zona grigia: {n_grigia} | Scartate: {n_scartate}")
-        # ────────────────────────────────────────────────────────────────
-
         resolver = EntityResolver(
             embedding_threshold=0.92,
             usar_embedding_merge=True,
@@ -364,7 +365,7 @@ def paso_grafo(forzar: bool = False) -> bool:
         summarizer.summarize(entity_map)
         summarizer.summarize_relations()
 
-        detector = CommunityDetector(graph=builder.graph, verbose=True)
+        detector = CommunityDetector(graph=builder.graph, verbose=True, min_community_size=4, gamma=0.5)
         detector.detect_and_summarize()
 
         builder.estadisticas()
@@ -385,6 +386,7 @@ def main():
     parser.add_argument("--forzar-ner", action="store_true")
     parser.add_argument("--forzar-grafo", action="store_true")
     parser.add_argument("--skip-neo4j", action="store_true")
+    parser.add_argument("--solo-ner", action="store_true", help="Esegue solo fino a ner_resultados.json + EDC, senza costruire il grafo")
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--solo-summaries", action="store_true")
     parser.add_argument("--workers", type=int, default=1,
@@ -409,8 +411,15 @@ def main():
     ):
         sys.exit(1)
 
+    if args.solo_ner:
+        safe_print("\n" + "=" * 60)
+        safe_print("⏹  --solo-ner: pipeline fermata dopo NER + EDC")
+        safe_print("=" * 60)
+        sys.exit(0)
+
     if not args.skip_neo4j:
         paso_grafo(forzar=args.forzar_grafo)
+
 
     safe_print("\n" + "=" * 60)
     safe_print("🎉 PIPELINE COMPLETADO")

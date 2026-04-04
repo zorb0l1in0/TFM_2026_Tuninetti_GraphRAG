@@ -178,7 +178,7 @@ class RelationCanonicalizer:
                     "relacion_extraida":   nome_nv,
                     "canonico_proposto":   onto_best,
                     "similitudine":        round(sim_best, 4),
-                    "seconda_scelta":      self._seconda_scelta(sims, idx_best),
+                    "seconda_scelta":      self._segunda_scelta(sims, idx_best),
                     "decisione":           "",   # campo da compilare manualmente
                 })
                 n_grigia += 1
@@ -220,13 +220,16 @@ class RelationCanonicalizer:
         return list(onto.get("relations", {}).keys())
 
     def _raccogliere_relazioni_non_valide(self, chunks: List[Dict]) -> set:
-        """Raccoglie i nomi unici di relazioni non valide in tutti i chunk."""
+        """Raccoglie solo le relazioni il cui NOME non esiste nell'ontologia.
+        Le relazioni con nome valido ma domain/range errato vengono lasciate
+        per revisione manuale nel tool."""
+        nomi_onto = set(self.relazioni_onto)
         non_valide = set()
         for chunk in chunks:
             for rel in chunk.get("relaciones", []):
                 if not rel.get("valida", True):
                     nombre = rel.get("relacion", "").strip()
-                    if nombre and nombre != "NONE":
+                    if nombre and nombre != "NONE" and nombre not in nomi_onto:
                         non_valide.add(nombre)
         return non_valide
 
