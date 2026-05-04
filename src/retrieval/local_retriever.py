@@ -38,7 +38,7 @@ RUTA_SALIDA    = _ROOT / "data" / "retrieval" / "local_retriever.json"
 RUTA_ONTOLOGIA = _ROOT / "data" / "ner" / "ontologia" / "ontology.yaml"
 RUTA_NER_JSON  = _ROOT / "data" / "ner" / "ner_resultados.json"
 RUTA_ACRONIMOS = _ROOT / "data" / "acronimos.yaml"
-RUTA_GT        = _ROOT / "data" / "retrieval" / "ground_truth.json"
+RUTA_GT        = _ROOT / "data" / "retrieval" / "ground_truth_10.json"
 
 # ── Costanti ──────────────────────────────────────────────────────────────────
 
@@ -47,16 +47,16 @@ SCORE_DECAY  = 0.5
 MAX_HOPS     = 2
 
 PREGUNTAS = [
-    "¿Ante quién se interpone el recurso de alzada contra la resolución de cambio de turno?",
-    "¿Cuáles son las causas justificadas que permiten solicitar el cambio de turno?",
-    "¿Qué documentación debe aportar un estudiante que solicita cambio de turno por motivos laborales?",
-    "¿Qué porcentaje mínimo de créditos debe superar un estudiante para mantenerse en el Programa de Doble Grado?",
-    "¿Qué órgano aprueba el calendario anual para la tramitación de nuevos Programas Académicos de Doble Grado?",
-    "¿Cuál es la fórmula para calcular la nota de admisión del alumnado de Bachillerato español?",
-    "¿Qué requisito de reconocimiento de créditos debe cumplirse para acceder por traslado de expediente según la resolución conjunta?",
-    "¿Qué norma habilita a la Secretaría General de la ULL para interpretar y resolver cuestiones sobre el reglamento de cambio de turno?",
-    "¿Qué ocurre con la doble titulación si se extingue uno de los títulos de Grado que la compone?",
-    "¿Qué universidades firman la resolución conjunta sobre requisitos académicos de admisión para el curso 2025-2026?"
+    "¿Cuántos días hábiles tiene el alumnado para solicitar la vista de exámenes tras la firmeza de las actas de la PAM-25 o PAM-45?",
+    "¿Qué calificación mínima debe obtenerse en cada ejercicio para poder promediar la nota final de la PAM-45?",
+    "¿Qué condición debe cumplir la calificación obtenida en la primera fase de la PAM-45 para que el aspirante pueda acceder a la entrevista en cursos posteriores?",
+    "¿Qué experiencia mínima debe acreditar una persona mayor de 40 años para poder solicitar acceso a la universidad por la vía laboral o profesional en la ULL?",
+    "¿Qué criterios componen la primera fase del procedimiento de acceso para mayores de 40 años en la ULL y cómo se puntúan?",
+    "¿Qué orden de prelación tienen los solicitantes de la PAM-25 del distrito universitario canario frente a los de otros distritos al solicitar admisión a una titulación vinculada a su opción de prueba?",
+    "¿Qué comisión organizadora es responsable de coordinar las pruebas de acceso para mayores de 25 y 45 años en las universidades canarias y quiénes la integran?",
+    "¿Cómo se calcula la nota de admisión de un estudiante extranjero de fuera de la UE que NO se presenta a las Pruebas de Competencias Específicas de la UNED y solicita la credencial UNEDasiss?",
+    "¿Qué documentación debe aportar un solicitante con título universitario extranjero para acreditar la equivalencia de su nota media en el procedimiento de preinscripción de la ULL?",
+    "¿Qué condición académica previa debe cumplir un alumno universitario para que el Rectorado pueda autorizar la simultaneidad de estudios en otra universidad?",
 ]
 
 

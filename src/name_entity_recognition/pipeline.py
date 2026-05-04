@@ -169,7 +169,7 @@ class PipelineNERDosPasos:
         verificador = VerificadorRestricciones(
             self.ontologia,
             mapa_entidades,
-            solo_existencia=False,
+            solo_existencia=True,
         )
         relaciones = verificador.verificar(items_relacion)
 
